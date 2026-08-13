@@ -10,6 +10,16 @@
 
 ### Added
 
+- **Windows 10/11 适配**：后端可在 Windows 上完整运行（Python 3.12 标准库）。
+  - 进程扫描改用 `netstat -ano -p tcp` 与 PowerShell `Get-CimInstance`（CPU% 暂置 0，内存用 WorkingSet 占比）。
+  - 受控进程模型改为「锚点进程 + 随机 token 命令行 + PPID 后代树」：`tools/win_anchor.py` 以临时 `.cmd` 批处理执行用户命令，等整棵进程树清空后以原退出码退出，等价于 macOS 的 bash 包装语义。
+  - 停止应用用 `taskkill /T`（先优雅、失败自动升级 `/F` 树杀）；`pid_alive` 改用 OpenProcess + GetExitCodeProcess（`os.kill(pid,0)` 在 Windows 上对已退出进程仍返回成功）。
+  - 实例锁改用 `msvcrt.locking` 回退（fcntl 仅 POSIX）；数据目录默认 `%APPDATA%\总控台` 与 `%LOCALAPPDATA%\总控台\Logs`。
+  - 工作目录经 PEB 只读读取（`NtQueryInformationProcess`，ctypes）；文件/目录选择框用 PowerShell + WinForms。
+  - 新增 `start.bat` 启动器；项目识别在 Windows 上用 `python`/`py -3` 并识别 `.bat/.cmd/.ps1` 启动脚本。
+  - `/api/state` 与 `/api/health` 增加 `platform` 字段，前端重启/停止提示按平台显示启动器名。
+  - 新增 `tests/test_windows.py`（Windows 专属解析与真实生命周期测试），macOS 专属测试在 Windows 上显式跳过；CI 增加 Windows 检查 job（含真实启动冒烟测试）。
+  - 项目检查在 Windows 上跳过 bash/plutil 检查（Info.plist 改用 plistlib 校验），并兼容 node 24 的 `--test` 输出格式。
 - 顶栏新增 GitHub 仓库图标按钮，点击在新标签页打开项目源码仓库。
 - 增加用户/开发文档、备份恢复和升级卸载指南。
 - 布局升级为指挥台结构：左侧图标导航轨、启动台与服务监控双视图 KPI 概览卡（含 CPU/内存火花线）、右侧实时动态/实时告警与端口/资源 TOP 5 信息栏、小贴士、页头快捷操作，以及服务/任务分区筛选芯片；服务表格增加 PID、状态列与 CPU 迷你负载条。结构样式集中于 `base.css`。

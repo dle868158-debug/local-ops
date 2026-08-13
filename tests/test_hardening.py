@@ -453,6 +453,7 @@ class ProcessLifecycleHardeningTests(unittest.TestCase):
                     except OSError:
                         pass
 
+    @unittest.skipIf(server.IS_WIN, "Windows 无 SIGTERM/SIG_IGN 语义（见 test_windows.py）")
     def test_sigterm_timeout_retains_runtime_identity_for_retry(self):
         command = (
             "python3 -c 'import signal,time; "
@@ -616,6 +617,7 @@ class KillEndpointTests(unittest.TestCase):
             if proc.poll() is None:
                 proc.kill()
 
+    @unittest.skipIf(server.IS_WIN, "Windows 无 SIGTERM 语义（kill 即 TerminateProcess）")
     def test_kill_force_sends_sigkill_to_sigterm_immune_process(self):
         code = ("import signal,time; signal.signal(signal.SIGTERM,"
                 " signal.SIG_IGN); time.sleep(30)")

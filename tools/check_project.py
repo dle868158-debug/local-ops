@@ -112,6 +112,8 @@ def check_required_files() -> str:
         "Makefile",
         "server.py",
         "start.command",
+        "start.bat",
+        "tools/win_anchor.py",
         "tests/test_server.py",
         "docs/screenshots/ops-launchpad.jpg",
         "docs/screenshots/ops-services.jpg",
@@ -392,6 +394,12 @@ def check_javascript_bindings() -> str:
 
 
 def check_shell_and_plist() -> str:
+    """macOS：bash 语法 + 可执行位 + plutil；Windows：无 /bin/bash，
+    跳过脚本检查，Info.plist 改用跨平台的 plistlib 校验可解析。"""
+    if sys.platform == "win32":
+        with INFO_PLIST.open("rb") as handle:
+            plistlib.load(handle)
+        return "启动脚本（Windows 跳过 bash 检查）+ Info.plist"
     shell_files = (
         ROOT / "start.command",
         ROOT / "总控台.app" / "Contents" / "MacOS" / "launcher",
@@ -554,7 +562,8 @@ def check_javascript_tests() -> str:
     files = sorted(str(path) for path in (ROOT / "tests" / "js").glob("*.test.mjs"))
     require(bool(files), "tests/js/ 下没有 .test.mjs 测试文件")
     output = command_output([node, "--test", *files])
-    match = re.search(r"# (pass)\s+(\d+)", output)
+    # node 22 及更早用 TAP 摘要（# pass 7）；node 24+ 用 spec reporter（ℹ pass 7）
+    match = re.search(r"(?:#|ℹ)\s*(pass|fail)\s+(\d+)", output)
     require(match is not None, "无法确认 node --test 结果")
     passed = int(match.group(2))
     require("# fail" not in output or re.search(r"# fail\s+0$", output, re.M),

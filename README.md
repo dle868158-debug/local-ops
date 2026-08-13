@@ -29,10 +29,11 @@
 
 ## 系统要求
 
-- macOS 12 或更高版本。
+- **macOS 12 或更高版本**，或 **Windows 10/11（64 位）**。
 - Python 3.12。运行时仅使用 Python 标准库。
-- macOS 自带的 `ps`、`lsof`、`osascript` 等系统工具。
-- Safari、Chrome 或其他支持 ES Modules 的现代浏览器。
+- macOS 自带的 `ps`、`lsof`、`osascript` 等系统工具；Windows 自带的
+  `netstat`、`taskkill`、`powershell`（PowerShell 5.1 已内置）。
+- Safari、Chrome、Edge 或其他支持 ES Modules 的现代浏览器。
 
 `VERSION` 是项目版本的唯一权威来源。`Info.plist`、发行包名和发行说明应与它保持一致。
 
@@ -64,9 +65,9 @@
 
 | 方式 | 操作 | 适用场景 |
 | --- | --- | --- |
-| 双击应用 | 双击 `总控台.app` | 日常使用。后台运行，无 Terminal 窗口和 Dock 图标 |
-| 双击脚本 | 双击 `start.command` | 想在 Terminal 里看实时输出 |
-| 命令行 | `python3 server.py` | 调试、脚本化或远程 SSH 启动 |
+| 双击应用 | 双击 `总控台.app` | macOS 日常使用。后台运行，无 Terminal 窗口和 Dock 图标 |
+| 双击脚本 | 双击 `start.command`（macOS）/ `start.bat`（Windows） | 想在终端窗口里看实时输出 |
+| 命令行 | `python3 server.py`（macOS）/ `py -3 server.py`（Windows） | 调试、脚本化或远程启动 |
 
 命令行还有两个可选参数：
 
@@ -80,6 +81,32 @@ python3 server.py --preferred-port 9603  # 在 9600-9609 内指定优先端口
 **实际地址在哪里看**：顶栏「重启 :9600」按钮上直接显示当前端口；或看终端输出 / `~/Library/Logs/总控台/console.log`。浏览器手动访问 `http://127.0.0.1:端口号/` 即可。
 
 **停止与重启**：顶栏「重启 / 停止」控制的是总控台自身（网页服务）。停止总控台**不会**停止启动台里已经运行的应用——它们是独立进程组，会继续运行；下次打开总控台时会自动重新识别。重启总控台会加载磁盘上的最新代码，同样不影响运行中的应用。
+
+## Windows 适配说明
+
+总控台在 Windows 上以等价语义运行，平台差异如下：
+
+- **受控进程模型**：Windows 没有进程组/信号。每个应用由一个小型 Python
+  “锚点”进程承载（`tools/win_anchor.py`，命令行带随机 token），用户命令
+  写入临时 `.cmd` 批处理文件后由 `cmd /c` 执行——这是 Windows 上能原样
+  执行任意命令的唯一稳妥通道。受控身份 = 锚点 PID + token 命令行 +
+  PPID 后代树；锚点会等到整棵进程树清空才退出（等价于 macOS 的 `wait`）。
+- **停止语义**：Windows 没有 SIGTERM。点“停止”会先尝试 `taskkill /T`
+  （仅对带窗口进程有效），失败自动升级为 `taskkill /T /F` 强制结束整棵
+  进程树。因此被停止的应用不会收到优雅退出通知，正在写入的数据可能丢失。
+- **进程扫描**：`lsof`/`ps` 换成 `netstat -ano -p tcp` 与
+  PowerShell `Get-CimInstance Win32_Process`；CPU% 在 Windows 上
+  暂不提供（置 0），内存使用 WorkingSet 占比。
+- **工作目录读取**：通过 `NtQueryInformationProcess` 读 PEB（ctypes，
+  只读）；同架构进程可读，被拒绝访问时该进程不显示目录。
+- **文件选择框**：PowerShell + WinForms 原生对话框（目录/文件）。
+- **系统通知**：任务完成通知由浏览器 Web Notification 实现，两平台一致。
+- **数据目录**：Windows 默认 `%APPDATA%\总控台`（配置/图标）与
+  `%LOCALAPPDATA%\总控台\Logs`（日志）；同样支持
+  `CONSOLE_DATA_DIR`/`CONSOLE_LOG_DIR` 覆盖。Windows 无 POSIX 权限位，
+  目录/文件安全由 NTFS ACL 保障（健康检查会自动跳过权限位校验）。
+- **启动台自动识别**：Windows 上 Python 项目使用 `python`/`py -3` 运行器，
+  并额外识别 `start.bat`/`dev.bat`/`start.cmd`/`start.ps1` 等启动脚本。
 
 ## 使用
 
@@ -134,10 +161,10 @@ python3 server.py --preferred-port 9603  # 在 9600-9609 内指定优先端口
 
 | 路径 | 内容 | 备份建议 |
 | --- | --- | --- |
-| `~/Library/Application Support/总控台/config.json` | 应用命令、本地路径、端口、标记和运行识别信息 | 必须 |
-| `~/Library/Application Support/总控台/config.json.bak` | 上一份已知良好的配置 | 必须 |
-| `~/Library/Application Support/总控台/icons/` | 用户上传的图标和站点图标 | 按需 |
-| `~/Library/Logs/总控台/` | 应用与总控台运行日志 | 通常不需 |
+| macOS `~/Library/Application Support/总控台/config.json`<br>Windows `%APPDATA%\总控台/config.json` | 应用命令、本地路径、端口、标记和运行识别信息 | 必须 |
+| `config.json.bak` | 上一份已知良好的配置 | 必须 |
+| `icons/` | 用户上传的图标和站点图标 | 按需 |
+| macOS `~/Library/Logs/总控台/`<br>Windows `%LOCALAPPDATA%\总控台\Logs` | 应用与总控台运行日志 | 通常不需 |
 
 目录权限会收紧为 `0700`，配置、图标和日志文件为 `0600`。这些文件仍可能含个人路径、完整 shell 命令和日志内容；不应进入 Git，也不应随发行包或故障报告对外传播。
 
