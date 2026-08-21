@@ -5,8 +5,8 @@
 ## 结构
 
 - `server.py` — 后端（单文件，仅标准库，Python 3.12）
-- `static/index.html` / `static/app.js`（入口）/ `static/js/{core,launchpad,services,overlays,ports,widgets}.js`（原生 ES Modules，无构建）/ `static/icons.js` — 前端（原生，禁框架/CDN/构建）；`core.js` 承载工具/API/浮层/状态/主题注册，`launchpad.js` 卡片+拖拽+诊断+启动台 KPI/分区过滤，`services.js` 表格+监控 KPI 火花线，`overlays.js` 模态+抽屉，`ports.js` 端口归一化纯函数，`widgets.js` 右侧信息栏（实时动态/告警、TOP5、小贴士、快捷操作）与导航轨状态；模块间用 `window.__poll` 共享轮询入口
-- 布局 v2：左侧 `.rail` 图标导航轨（启动台/服务监控视图切换 + 日志中心/设置中心弹层入口）+ 顶栏 + 内容/右侧信息栏双栏网格（≤1280px 侧栏下沉到底部、≤900px 导航轨隐藏）；结构样式集中在 `static/base.css` 末尾「布局 v2」段（主题令牌驱动），主题包负责视觉皮肤
+- `static/index.html` / `static/app.js`（入口）/ `static/js/{core,launchpad,services,overlays,ports,widgets,skills}.js`（原生 ES Modules，无构建）/ `static/icons.js` — 前端（原生，禁框架/CDN/构建）；`core.js` 承载工具/API/浮层/状态/主题注册，`launchpad.js` 卡片+拖拽+诊断+启动台 KPI/分区过滤，`services.js` 表格+监控 KPI 火花线，`overlays.js` 模态+抽屉，`ports.js` 端口归一化纯函数，`widgets.js` 右侧信息栏（实时动态/告警、TOP5、小贴士、快捷操作）与导航轨状态，`skills.js` 技能工作台视图（懒加载 `/api/skills`、概览统计、分类/技能库筛选、中文搜索、卡片网格与详情抽屉）；模块间用 `window.__poll` 共享轮询入口
+- 布局 v2：左侧 `.rail` 图标导航轨（启动台/服务监控/技能工作台视图切换 + 日志中心/设置中心弹层入口）+ 顶栏 + 内容/右侧信息栏双栏网格（≤1280px 侧栏下沉到底部、≤900px 导航轨隐藏）；结构样式集中在 `static/base.css` 末尾「布局 v2」段（主题令牌驱动），主题包负责视觉皮肤
 - `static/themes/` — **单一主题**：当前仅内置 `ops`（指挥台，`DEFAULT_UI_THEME` 常量指定并在清单中固定排首位）。`{id}.css` 整包样式 + `{id}.json` 清单（`id/name/author/desc/colors[]`）的注册机制保留：`GET /api/state` 返回 `themes` 与 `uiTheme`；`POST /api/ui/theme {theme}` 校验 id 后落盘。产品不提供主题选择界面（已随多主题一并移除），深浅色切换仍保留。
 - `static/fonts/GeistMono-Variable.woff2` — vendored 数据/代码字体；中文与正文使用 macOS 系统字体栈；`static/icons/*.svg` — Lucide 图标源文件（vendored）；`tools/gen_icons.py` — 由 svg 重新生成 `icons.js`（勿手改 icons.js）
 - `static/assets/` — 品牌素材：`console-app-icon.png` 为 App Icon 主图，`brand-mark.png` 为顶栏标识；`favicon-32.png` / `favicon.ico` / `apple-touch-icon.png` 与 `.app` 内 `AppIcon.icns` 由 `tools/gen_brand_assets.py` 生成
@@ -59,7 +59,7 @@
 - `group`: `"mine"` | `"background"`；`icon`/`emoji`/`port`/`cwd`/`project`/`appId`/`appName`/`lastExit` 可为 `null`
 - `lastExit`：最近一次退出结果。任务状态为 `succeeded`（exit 0）/`canceled`（脚本主动 exit 130）/`failed`（其他自然退出）/`stopped`（总控台中止，code=null）；旧数据可能只有 `code/at`，API 输出时会兼容推导但不改写磁盘。批处理启动时保留上一次完成历史，自然退出或中止后覆盖
 - `health`：每次状态读取时只读检查配置，返回 `status: ok|error|unknown`、`blocking` 与 `issues[{kind,severity,title,detail,fix,action}]`。明确缺失的 cwd、脚本或运行时会阻止启动；复杂 Shell 命令无法静态判断时为 unknown，不阻止运行
-- `kind`：`"service"`（长期服务，有端口语义）| `"task"`（批处理任务，强制 port=null，主按钮为「运行」）；旧数据缺省视为 `service`。启动台按 kind 分两个区渲染
+- `kind`：`"service"`（长期服务，有端口语义）| `"task"`（批处理任务，强制 port=null，主按钮为「运行」）| `"link"`（网址卡片，强制 port=null，主按钮为「打开」用系统浏览器访问 `url`，不运行命令、无健康/退出语义）；旧数据缺省视为 `service`。启动台按 kind 分三个区渲染
 - `running`：仅表示存在通过本次启动 token、进程组与当前用户三重校验的受控进程；不再以“配置端口有任意监听者”作为运行依据
 - `attached`：用户从服务监控明确认领的外部服务身份。此类服务的监听子进程换 PID 后，可按配置端口 + 当前 UID + 真实 cwd 唯一重新关联；普通卡片仍不得仅凭端口自动认领
 - 服务行的 `key` 保持 `name:port` 以兼容隐藏/置顶配置；`instanceKey` 使用 `pid:port` 区分同名同端口后来出现的新进程实例，前端发现与 DOM 对账均使用它
@@ -68,21 +68,53 @@
 - 排除控制台自身进程；只返回当前用户的进程
 - **进程溯源**：`origin` 沿 PPID 链（≤12 层）识别启动者——跳过壳/包管理器/运行时包装层与 launchd，优先匹配已知 AI 编程助手（codex/claude/kimi/gemini/aider/opencode 等）、`.app` 包（VS Code/Cursor/iTerm/Warp 等）、tmux/screen 与总控台 run-token 标记（「总控台」）；未识别的中间层先记为候选、有更优答案即覆盖，全部落空才以最近未识别进程命名；`label` 为展示名、`icon` 取 bot/code/terminal/package/rocket/server，仅用于展示，不影响启停判定
 
+### `GET /api/skills` — 技能工作台数据（懒加载，不进 2s 轮询）
+```json
+{
+  "generatedAt": 1700000000,
+  "roots": [{"id": "agents", "label": "AI 技能库", "path": "C:\\Users\\...\\.agents\\skills", "count": 82}],
+  "categories": ["学术写作", "论文评审与审计"],
+  "count": 118,
+  "skills": [{
+    "id": "academic-paper", "dir": "academic-paper",
+    "roots": ["agents", "claude"],
+    "category": "学术写作",
+    "summary": "多智能体学术论文写作流水线…",
+    "detail": "由12个智能体协作撰写学术论文…",
+    "usage": "用户说\"写论文\"\"帮我规划论文大纲\"…时触发。",
+    "hasZh": true,
+    "description": "12-agent academic paper writing pipeline…",
+    "triggers": ["write paper", "academic paper"],
+    "version": "3.0.2", "updated": "2026-04-15",
+    "related": ["deep-research", "academic-pipeline"],
+    "source": "Imbad0202/academic-research-skills",
+    "installedAt": "2026-04-20T07:13:06.683Z",
+    "path": "C:\\Users\\...\\.agents\\skills\\academic-paper\\SKILL.md"
+  }]
+}
+```
+- 扫描 `~/.agents/skills`（AI 技能库）、`~/.claude/skills`（Claude 技能库）、`~/.codex/skills`（Codex 技能库），解析各 `SKILL.md` 的 YAML frontmatter（最小子集解析器，零依赖），按技能名（frontmatter `name` 或目录名）去重合并
+- 与 `static/skills_zh.json` 中文索引合并（`{skills: {id: {category, summary, detail, usage}}}`）；未收录中文的技能 `hasZh:false`、`category` 兜底「其他」
+- `~/.agents/.skill-lock.json` 提供 `source`/`installedAt`；`description` 截断至 500 字符
+- 内存缓存按各库目录与中文索引的 mtime 指纹失效，无需手动刷新接口；仅前端「刷新」按钮强制重拉
+
 ### 服务操作
 - `POST /api/kill` `{pid, force?}` → `{ok}` / `{ok:false, error}`（force 用 SIGKILL；校验属当前用户）
 - `POST /api/services/flag` `{key, flag: "hidden"|"pinned"|"promoted", value: bool}` → `{ok}`（promoted=false 即「移回后台」，前端对 `svc.promoted` 的行显示该按钮）
 - `POST /api/watch` `{keyword, action: "add"|"remove"}` → `{ok, keywords}`
 
 ### 启动台应用
-- `POST /api/apps` `{name, command, cwd?, port?, emoji?, glyph?, kind?, attachPid?}` → app 对象（`kind` 缺省 `service`；`task` 强制 port=null；服务监控来源可带 `attachPid`，后端先校验 PID/端口/UID/cwd，再将卡片与运行身份一次写入，失败不创建半成品卡片）
+- `POST /api/apps` `{name, command, cwd?, port?, emoji?, glyph?, kind?, url?, autoStart?, keepAlive?, attachPid?}` → app 对象（`kind` 缺省 `service`；`task` 与 `link` 强制 port=null；`link` 必须提供 `url`（http/https），command 可为空；`autoStart` 随总控台启动、`keepAlive` 异常自动重启（守护）仅对 `service` 生效；服务监控来源可带 `attachPid`，后端先校验 PID/端口/UID/cwd，再将卡片与运行身份一次写入，失败不创建半成品卡片）
 - `POST /api/pick` `{what: "dir"|"script"}` → `{ok, path}` / `{ok, canceled:true}`（osascript 弹 macOS 原生目录/文件选择框；取消不是错误）
 - `POST /api/project/detect` `{cwd}` → `{ok, cwd, name, files, candidates:[{command,label,source,port,kind,detail}]}`（只读分析项目根目录，不执行项目代码；识别 package.json scripts 与包管理器锁文件、Hexo/Hugo/Jekyll、Django/FastAPI/Flask/Streamlit、Docker Compose、Go、Rust、常用启动脚本及纯静态站点。Hexo 无 scripts 时仍返回 `hexo s` 服务与 `hexo cl` 任务）
-- `POST /api/apps/reorder` `{ids: [...]}` → `{ok}`（按 ids 重排 apps 数组；Python sort 稳定，未涉及的 id 相对顺序不变，服务/任务两区可独立拖拽排序互不干扰）
+- `POST /api/apps/reorder` `{ids: [...]}` → `{ok}`（按 ids 重排 apps 数组；Python sort 稳定，未涉及的 id 相对顺序不变，服务/任务/网址三区可独立拖拽排序互不干扰）
 - `PUT /api/apps/{id}`（部分更新同字段，可带 `stopBeforeUpdate:true`）→ app 对象；运行中修改 command/cwd/port/kind 时，缺少该标记返回 `{ok:false, requiresStop:true}`，带标记则安全停止后原子保存
 - `DELETE /api/apps/{id}` → `{ok}`（先停止再删，连同图标/日志）
 - `POST /api/apps/{id}/start` → `{ok, pid}` / `{ok:false, error, health?}`（已运行则报错；启动前复查配置健康，明确失效返回 422；批处理启动后立即返回，由退出监视线程记录结果，快速成功任务不会被误判成启动失败）
-- `POST /api/apps/{id}/stop` → `{ok}` / `{ok:false, error}`
+- `POST /api/apps/{id}/stop` → `{ok}` / `{ok:false, error}`（keepAlive 卡片的手动停止会写 `keepAliveSuspended` 挂起守护，再次启动/重启后恢复）
 - `POST /api/apps/{id}/restart` → `{ok, pid}` / `{ok:false, error}`（仅重启 token 校验通过的受管进程；等待旧进程退出后再启动，不自动 SIGKILL）
+- `POST /api/apps/{id}/open` → `{ok, url}` / `{ok:false, error}`（网址卡片专用：用系统默认浏览器打开配置的 `url`；Windows 走 `os.startfile`，macOS 走 `webbrowser.open`；非 link 卡片拒绝。`start/stop/restart` 对 link 卡片拒绝）
+- `POST /api/apps/{id}/shortcut` → `{ok, path}` / `{ok:false, error}`（在桌面创建快捷方式：双击 = `总控台.exe --open-app <id>` 启动总控台并拉起/打开该卡片；仅 Windows 打包版，通过 WScript.Shell COM 写 .lnk）
 - `POST /api/apps/{id}/diagnose` → `{ok, issues:[{kind,title,detail,fix,action?}], summary}`（本地规则诊断，不调外部 AI：合并运行前健康检查，并覆盖依赖未装/模块缺失、npm 脚本名错误、运行时端口占用、权限不足、pip 包缺失与退出码兜底判读；前端在配置失效或运行失败时显示诊断入口）
 - `POST /api/apps/{id}/attach` `{pid}` → `{ok, pid, cwdUpdated?, cwd?}` / `{ok:false, error}`（把已在监听配置端口的当前用户进程**认领**为本卡片受管进程：走 legacy 身份通道 lastPid+端口+UID+真实 cwd 四重校验，cwd 不一致时原子同步为进程实际目录；拒绝 task、无端口、已运行、非当前用户、他卡已认领与未监听该端口的进程。前端在端口诊断弹窗提供「认领为本卡片」）
 - `POST /api/apps/{id}/icon`（body 为 png/jpg/webp 原始字节）→ `{ok, icon}`
@@ -93,6 +125,7 @@
 ### 总控台自身
 - `POST /api/console/restart` → `{ok, pid, helperPid, port}`（先返回响应，再由独立 helper 等待旧进程退出并优先复用原端口；启动台应用不随总控台停止）
 - `POST /api/console/stop` → `{ok, pid, port}`（响应发出后关闭总控台 HTTP 服务；启动台中已经运行的独立进程组保持运行）
+- `POST /api/console/autostart` `{enabled}` → `{ok, enabled}` / `{ok:false, error}`（Windows：写/删 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的「总控台」项指向当前 EXE；`GET /api/state` 的 `consoleAutostart` 按值精确比对返回当前状态；非 Windows 返回 500）
 - `POST /api/ui/theme` `{theme}` → `{ok, theme}` / `{ok:false, error}`（校验主题 id 存在后写入 `config.json` 的 `uiTheme`；主题清单由 `/api/state` 的 `themes` 字段返回）
 
 ### 静态
@@ -100,7 +133,7 @@
 
 ## 后端实现要点
 
-- **平台适配层**：macOS 与 Windows 共用全部上层逻辑，平台差异收敛在少量同签名函数里（`IS_WIN` 分支）：扫描（`lsof`/`ps` ↔ `netstat`/PowerShell CIM）、受控进程模型（pgid ↔ PPID 后代树 + `tools/win_anchor.py` 锚点）、停止（`killpg` ↔ `taskkill /T[/F]`）、存活判定（`os.kill(pid,0)` ↔ OpenProcess+GetExitCodeProcess）、cwd（lsof ↔ PEB 读取）、文件选择框（osascript ↔ PowerShell WinForms）、实例锁（flock ↔ msvcrt.locking）、数据目录（`~/Library/...` ↔ `%APPDATA%`/`%LOCALAPPDATA%`）。修改平台相关代码时须保证两平台语义等价并在两平台跑测试。
+- **平台适配层**：macOS 与 Windows 共用全部上层逻辑，平台差异收敛在少量同签名函数里（`IS_WIN` 分支）：扫描（`lsof`/`ps` ↔ `netstat`/PowerShell CIM）、受控进程模型（pgid ↔ PPID 后代树 + `tools/win_anchor.py` 锚点）、停止（`killpg` ↔ `taskkill /T[/F]`）、存活判定（`os.kill(pid,0)` ↔ OpenProcess+GetExitCodeProcess）、cwd（lsof ↔ PEB 读取）、文件选择框（osascript ↔ `tools/win_pick.py` IFileOpenDialog）、实例锁（flock ↔ msvcrt.locking）、数据目录（`~/Library/...` ↔ `%APPDATA%`/`%LOCALAPPDATA%`）。修改平台相关代码时须保证两平台语义等价并在两平台跑测试。
 - **端口扫描**：`lsof -iTCP -sTCP:LISTEN -P -n`（Windows：`netstat -ano -p tcp`），按 `(pid, port)` 去重（IPv4/6 重复行）。lsof 的 COMMAND 列会截断，名称以 ps 的 comm 为准。
 - **进程详情**：批量 `ps -o pid=,user=,comm=,args=,%cpu=,%mem=,etime= -p <逗号分隔pid>`；只保留 `user == 当前用户`。
 - **cwd**：`lsof -a -p <逗号分隔pid> -d cwd -Fn`，解析 `n` 行。
@@ -124,7 +157,7 @@
 ```json
 {
   "schemaVersion": 1,
-  "apps": [{"id": "8位hex", "name": "", "command": "", "cwd": null, "port": null, "emoji": null, "icon": null, "favicon": null, "kind": "service", "lastPid": null, "lastPgid": null, "runToken": null, "attached": false, "lastExit": null, "createdAt": 0}],
+  "apps": [{"id": "8位hex", "name": "", "command": "", "cwd": null, "port": null, "emoji": null, "icon": null, "favicon": null, "kind": "service", "url": null, "autoStart": false, "keepAlive": false, "keepAliveSuspended": false, "lastPid": null, "lastPgid": null, "runToken": null, "attached": false, "lastExit": null, "createdAt": 0}],
   "hidden": ["name:port"], "pinned": ["name:port"], "promoted": ["name:port"],
   "watchedKeywords": [],
   "uiTheme": "ops"
@@ -133,7 +166,8 @@
 
 ## 前端要求
 
-- 中文 UI，单页两视图（侧边导航：启动台 / 服务监控），每 2s 轮询 `/api/state`
+- 中文 UI，单页三视图（侧边导航：启动台 / 服务监控 / 技能工作台），每 2s 轮询 `/api/state`
+- 技能工作台视图：懒加载 `/api/skills`（仅视图激活时拉取并缓存），打开后默认按 12 个中文分类直接展示全部技能；概览统计（总数/分类/中文覆盖/技能库）、分类与技能库双筛选、中文搜索（名称/中文/英文/触发词）、分类卡片网格（中文简介 + 来源徽标 + 版本）与详情抽屉（中文详解、触发方式、元信息、原始英文描述、关联技能跳转）；每张卡片提供「调用技能」，打开调用面板并复制可直接发送给 AI 的调用语句；「刷新技能」只局部刷新技能数据，带超时与错误隔离，不影响 `/api/state` 主轮询；中文缺失时卡片显示「暂无中文」并回退原文
 - 添加服务时选择工作区文件夹后自动调用项目识别并展示候选命令；用户点选候选后再填入命令/端口。原有“选择脚本”与手动填写入口必须保留
 - 编辑运行中服务时，表单内立即显示“停止服务”；停止操作不得关闭编辑面板或清除已经填写的内容，停止后恢复普通“保存”
 - 批处理运行中显示实时耗时和「中止」入口；结束后明确显示成功/取消/失败/中止、距今时间与耗时。失败时突出日志入口；首次加载已有历史不重复提醒

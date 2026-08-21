@@ -11,6 +11,7 @@ API 契约与实现要点见 AGENTS.md。
 
 import glob
 import functools
+import io
 import errno
 import json
 import logging
@@ -40,6 +41,7 @@ except ImportError:  # pragma: no cover - Windows
 
 if sys.platform == "win32":
     import ctypes
+    import winreg
     from ctypes import wintypes
     _KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)
     _NTDLL = ctypes.WinDLL("ntdll", use_last_error=True)
@@ -58,6 +60,67 @@ if sys.platform == "win32":
     _NTDLL.NtQueryInformationProcess.argtypes = [
         wintypes.HANDLE, wintypes.ULONG, wintypes.LPVOID,
         wintypes.ULONG, ctypes.c_void_p]
+    # 原生进程扫描（Toolhelp + PEB），替代慢速 PowerShell/CIM。
+    _KERNEL32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    _KERNEL32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD,
+                                                   wintypes.DWORD]
+    _KERNEL32.Process32FirstW.restype = wintypes.BOOL
+    _KERNEL32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+    _KERNEL32.Process32NextW.restype = wintypes.BOOL
+    _KERNEL32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+    _KERNEL32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    _KERNEL32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD)]
+    _KERNEL32.GetProcessTimes.restype = wintypes.BOOL
+    _KERNEL32.GetProcessTimes.argtypes = [wintypes.HANDLE] + \
+        [ctypes.c_void_p] * 4
+    _KERNEL32.K32GetProcessMemoryInfo.restype = wintypes.BOOL
+    _KERNEL32.K32GetProcessMemoryInfo.argtypes = [
+        wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD]
+    _KERNEL32.GlobalMemoryStatusEx.restype = wintypes.BOOL
+    _KERNEL32.GlobalMemoryStatusEx.argtypes = [ctypes.c_void_p]
+
+    class _PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        ]
+
+    class _PROCESS_MEMORY_COUNTERS(ctypes.Structure):
+        _fields_ = [
+            ("cb", wintypes.DWORD),
+            ("PageFaultCount", wintypes.DWORD),
+            ("PeakWorkingSetSize", ctypes.c_size_t),
+            ("WorkingSetSize", ctypes.c_size_t),
+            ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+            ("PagefileUsage", ctypes.c_size_t),
+            ("PeakPagefileUsage", ctypes.c_size_t),
+        ]
+
+    class _MEMORYSTATUSEX(ctypes.Structure):
+        _fields_ = [
+            ("dwLength", wintypes.DWORD),
+            ("dwMemoryLoad", wintypes.DWORD),
+            ("ullTotalPhys", ctypes.c_uint64),
+            ("ullAvailPhys", ctypes.c_uint64),
+            ("ullTotalPageFile", ctypes.c_uint64),
+            ("ullAvailPageFile", ctypes.c_uint64),
+            ("ullTotalVirtual", ctypes.c_uint64),
+            ("ullAvailVirtual", ctypes.c_uint64),
+            ("ullAvailExtendedVirtual", ctypes.c_uint64),
+        ]
 else:  # pragma: no cover - macOS
     ctypes = None
     wintypes = None
@@ -66,10 +129,42 @@ else:  # pragma: no cover - macOS
 
 IS_WIN = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
+IS_FROZEN = getattr(sys, "frozen", False)
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-VERSION_PATH = os.path.join(BASE_DIR, "VERSION")
-LEGACY_DATA_DIR = os.path.join(BASE_DIR, "data")
+
+def resource_path(rel=""):
+    """资源根目录：PyInstaller 冻结态取解压目录 sys._MEIPASS，否则源码目录。
+
+    打进 EXE 的静态资源（static/、VERSION、tools/）冻结态会解压到
+    _MEIPASS，所有指向项目内文件的路径必须经此函数解析；运行态用户数据
+    （config.json、应用图标、日志）在 %APPDATA%/%LOCALAPPDATA%，不走这里。
+    """
+    if IS_FROZEN and hasattr(sys, "_MEIPASS"):
+        base = sys._MEIPASS
+    else:
+        base = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, rel) if rel else base
+
+
+BASE_DIR = resource_path()
+VERSION_PATH = resource_path("VERSION")
+LEGACY_DATA_DIR = resource_path("data")
+
+
+def _frozen_child_env(extra=None):
+    """冻结态拉起同类 EXE 子进程时，剥掉 _MEIPASS/_MEIPASS2 环境变量。
+
+    onefile 引导器靠 _MEIPASS 定位解压目录；子实例若继承父实例的
+    _MEIPASS，父进程退出时会把子实例的解压目录一并清理，导致子实例
+    运行中 import 失败（base_library.zip 丢失）。PyInstaller 官方
+    文档要求嵌套启动时必须移除。
+    """
+    env = dict(os.environ)
+    env.pop("_MEIPASS", None)
+    env.pop("_MEIPASS2", None)
+    if extra:
+        env.update(extra)
+    return env
 if IS_WIN:
     _appdata = os.environ.get("APPDATA") or os.path.expanduser("~")
     _localappdata = os.environ.get("LOCALAPPDATA") or _appdata
@@ -213,7 +308,7 @@ code{background:#f5f5f7;border:1px solid rgba(0,0,0,.05);border-radius:6px;paddi
 </div></body></html>"""
 
 APP_ROUTE_RE = re.compile(
-    r"^/api/apps/([0-9a-fA-F]{8})(?:/(start|stop|restart|icon|logs|favicon|diagnose|attach))?$")
+    r"^/api/apps/([0-9a-fA-F]{8})(?:/(start|stop|restart|open|shortcut|icon|logs|favicon|diagnose|attach))?$")
 
 
 # ---------------------------------------------------------------- 运行目录
@@ -429,7 +524,10 @@ class Config:
                "watchedKeywords": [], "uiTheme": DEFAULT_UI_THEME}
     APP_DEFAULT = {"id": None, "name": "", "command": "", "cwd": None,
                    "port": None, "emoji": None, "glyph": None, "icon": None,
-                   "favicon": None, "kind": "service", "lastPid": None,
+                   "favicon": None, "kind": "service", "url": None,
+                   "autoStart": False, "keepAlive": False,
+                   "keepAliveSuspended": False,
+                   "lastPid": None,
                    "lastPgid": None, "runToken": None,
                    "attached": False, "lastExit": None, "createdAt": 0}
 
@@ -647,11 +745,30 @@ def release_instance_lock(lock_file):
 
 # ---------------------------------------------------------------- 子进程与解析
 
+def _win_hidden_subprocess_kwargs():
+    """Windows 下隐藏子进程控制台窗口的通用参数。
+
+    窗口化（--windowed）总控台自身没有控制台，任何控制台类子进程
+    （netstat/taskkill/powershell）都会新建一个可见的黑色控制台窗口，
+    造成运行中黑窗闪动。CREATE_NO_WINDOW + SW_HIDE 双保险。
+    非 Windows 返回空字典，跨平台调用不受影响。
+    """
+    kwargs = {}
+    if IS_WIN:
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0  # SW_HIDE
+        kwargs["startupinfo"] = startupinfo
+    return kwargs
+
+
 def run_cmd(args, timeout=SUBPROCESS_TIMEOUT):
     """运行命令并返回 stdout；任何异常/超时都返回空串，绝不上抛。"""
     try:
         r = subprocess.run(args, capture_output=True, text=True,
-                           errors="replace", timeout=timeout)
+                           errors="replace", timeout=timeout,
+                           **_win_hidden_subprocess_kwargs())
         return r.stdout or ""
     except Exception:
         LOG.exception("命令执行失败: %r", args)
@@ -675,7 +792,8 @@ def _win_powershell(script, timeout=SUBPROCESS_TIMEOUT):
             ["powershell", "-NoProfile", "-NonInteractive",
              "-ExecutionPolicy", "Bypass", "-Command",
              "[Console]::OutputEncoding=[Text.Encoding]::UTF8; " + script],
-            capture_output=True, timeout=timeout)
+            capture_output=True, timeout=timeout,
+            **_win_hidden_subprocess_kwargs())
         return r.stdout.decode("utf-8", errors="replace") or ""
     except Exception:
         LOG.exception("PowerShell 执行失败")
@@ -718,8 +836,153 @@ def _parse_win_process_table_json(text):
     return table
 
 
+_TH32CS_SNAPPROCESS = 0x2
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_PROCESS_VM_READ = 0x0010
+
+
+def _win_image_path(handle):
+    """QueryFullProcessImageNameW → 可执行文件完整路径；失败返回 ""。"""
+    size = wintypes.DWORD(4096)
+    buf = ctypes.create_unicode_buffer(size.value)
+    if _KERNEL32.QueryFullProcessImageNameW(handle, 0, buf,
+                                            ctypes.byref(size)):
+        return buf.value
+    return ""
+
+
+def _win_creation_epoch(handle):
+    """GetProcessTimes → 创建时间戳（epoch 秒）；失败返回 None。"""
+    times = (wintypes.FILETIME * 4)()
+    if not _KERNEL32.GetProcessTimes(
+            handle, ctypes.byref(times[0]), ctypes.byref(times[1]),
+            ctypes.byref(times[2]), ctypes.byref(times[3])):
+        return None
+    value = (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
+    if value <= 0:
+        return None
+    return (value - _WIN_EPOCH) / 1e7
+
+
+def _win_working_set(handle):
+    """K32GetProcessMemoryInfo → WorkingSetSize 字节；失败返回 None。"""
+    counters = _PROCESS_MEMORY_COUNTERS()
+    counters.cb = ctypes.sizeof(counters)
+    if _KERNEL32.K32GetProcessMemoryInfo(handle, ctypes.byref(counters),
+                                         counters.cb):
+        return int(counters.WorkingSetSize)
+    return None
+
+
+def _win_cmdline(handle):
+    """读取进程 PEB 中的完整命令行；失败返回 ""。
+
+    与 _win_cwd 相同的 NtQueryInformationProcess → PEB →
+    RTL_USER_PROCESS_PARAMETERS 链路，只是取 CommandLine 字段。
+    """
+    try:
+        is_64 = ctypes.sizeof(ctypes.c_void_p) == 8
+        buf = ctypes.create_string_buffer(48)
+        if _NTDLL.NtQueryInformationProcess(handle, 0, buf, 48, None) != 0:
+            return ""
+        if is_64:
+            peb_addr = int.from_bytes(buf.raw[8:16], "little")
+            params_offset, cmd_offset, ptr_size = 0x20, 0x70, 8
+        else:
+            peb_addr = int.from_bytes(buf.raw[4:8], "little")
+            params_offset, cmd_offset, ptr_size = 0x10, 0x40, 4
+        if not peb_addr:
+            return ""
+        peb = ctypes.create_string_buffer(params_offset + ptr_size)
+        if not _KERNEL32.ReadProcessMemory(
+                handle, peb_addr, peb, len(peb), None):
+            return ""
+        params_addr = int.from_bytes(
+            peb.raw[params_offset:params_offset + ptr_size], "little")
+        if not params_addr:
+            return ""
+        params = ctypes.create_string_buffer(cmd_offset + 2 * ptr_size)
+        if not _KERNEL32.ReadProcessMemory(
+                handle, params_addr, params, len(params), None):
+            return ""
+        length = int.from_bytes(params.raw[cmd_offset:cmd_offset + 2],
+                                "little")
+        if length <= 0 or length > 65534:
+            return ""
+        buffer_addr = int.from_bytes(
+            params.raw[cmd_offset + ptr_size:cmd_offset + 2 * ptr_size],
+            "little")
+        if not buffer_addr:
+            return ""
+        raw = ctypes.create_string_buffer(length)
+        if not _KERNEL32.ReadProcessMemory(
+                handle, buffer_addr, raw, length, None):
+            return ""
+        return raw.raw.decode("utf-16-le", errors="replace").strip("\x00")
+    except Exception:
+        return ""
+
+
+def _win_process_table_native():
+    """Toolhelp 快照 + PEB 命令行的原生进程表；失败返回 {}。
+
+    PowerShell/CIM 单次调用要 2-3 秒，而一轮状态构建要查多次进程表，
+    曾把 /api/state 拖到 13 秒（超过前端 12 秒超时）。原生路径全表仅
+    数十毫秒。打不开的（系统/受保护）进程保留名称，args/exe 置空，
+    与 CIM 对这类进程返回 null 的行为一致。
+    """
+    snapshot = _KERNEL32.CreateToolhelp32Snapshot(_TH32CS_SNAPPROCESS, 0)
+    if not snapshot or snapshot == ctypes.c_void_p(-1).value:
+        return {}
+    entries = []
+    try:
+        entry = _PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(_PROCESSENTRY32W)
+        if not _KERNEL32.Process32FirstW(snapshot, ctypes.byref(entry)):
+            return {}
+        while True:
+            entries.append((int(entry.th32ProcessID),
+                            int(entry.th32ParentProcessID),
+                            entry.szExeFile))
+            if not _KERNEL32.Process32NextW(snapshot, ctypes.byref(entry)):
+                break
+    finally:
+        _KERNEL32.CloseHandle(snapshot)
+    table = {}
+    for pid, ppid, name in entries:
+        if pid <= 0:
+            continue
+        info = {"ppid": ppid, "name": name or "", "exe": "",
+                "args": "", "created": None, "ws": None}
+        handle = _KERNEL32.OpenProcess(
+            _PROCESS_QUERY_LIMITED_INFORMATION | _PROCESS_VM_READ, False, pid)
+        if not handle:
+            handle = _KERNEL32.OpenProcess(
+                _PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if handle:
+            try:
+                info["exe"] = _win_image_path(handle)
+                info["created"] = _win_creation_epoch(handle)
+                info["ws"] = _win_working_set(handle)
+                info["args"] = _win_cmdline(handle)
+            finally:
+                _KERNEL32.CloseHandle(handle)
+        table[pid] = info
+    return table
+
+
 def _win_process_table():
-    """一次性 CIM 快照 → {pid: {ppid, args, name, exe, created, ws}}。"""
+    """一次性进程快照 → {pid: {ppid, args, name, exe, created, ws}}。
+
+    优先原生 Toolhelp/PEB 路径；异常时退回 PowerShell CIM 慢路径。
+    """
+    try:
+        table = _win_process_table_native()
+    except Exception:
+        LOG.exception("原生进程扫描失败，退回 CIM")
+        table = {}
+    if table:
+        return table
     script = (
         "Get-CimInstance Win32_Process | "
         "Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,"
@@ -736,12 +999,11 @@ def _win_total_memory_kb():
     now = time.monotonic()
     if now - _WIN_TOTAL_MEM_CACHE["mono"] < 10.0:
         return _WIN_TOTAL_MEM_CACHE["kb"]
-    out = _win_powershell(
-        "(Get-CimInstance Win32_OperatingSystem).TotalVisibleMemorySize")
-    try:
-        kb = float(out.strip())
-    except (TypeError, ValueError):
-        kb = 0.0
+    kb = 0.0
+    status = _MEMORYSTATUSEX()
+    status.dwLength = ctypes.sizeof(status)
+    if _KERNEL32.GlobalMemoryStatusEx(ctypes.byref(status)):
+        kb = status.ullTotalPhys / 1024.0
     _WIN_TOTAL_MEM_CACHE["mono"] = now
     _WIN_TOTAL_MEM_CACHE["kb"] = kb
     return kb
@@ -751,9 +1013,14 @@ _WIN_EPOCH = 116444736000000000  # 1601-01-01 → 1970-01-01（100ns 单位）
 
 
 def _win_parse_creation(created):
-    """CIM CreationDate (ISO 或 WMI DMTF 格式) → 创建时间戳秒；失败返回 None。"""
+    """创建时间 → epoch 秒；失败返回 None。
+
+    原生路径直接给 epoch 数值；CIM 退路给 ISO 或 WMI DMTF 格式文本。
+    """
     if not created:
         return None
+    if isinstance(created, (int, float)):
+        return float(created)
     text = str(created)
     try:
         if text.endswith("+000") or "T" in text:
@@ -868,7 +1135,8 @@ def _win_taskkill(pid, tree=True, force=False):
     args += ["/PID", str(int(pid))]
     try:
         r = subprocess.run(args, capture_output=True, text=True,
-                           errors="replace", timeout=SUBPROCESS_TIMEOUT)
+                           errors="replace", timeout=SUBPROCESS_TIMEOUT,
+                           **_win_hidden_subprocess_kwargs())
     except Exception as e:
         return False, "taskkill 失败: %s" % e
     if r.returncode == 0:
@@ -1646,6 +1914,10 @@ def build_apps(cfg, listeners, groups=None):
             "uptimeSec": ((snap.get(pid) or listener_snap.get(pid) or {}).get("etime")
                           if pid else None),
             "kind": app.get("kind") or "service",
+            "url": app.get("url"),
+            "autoStart": bool(app.get("autoStart")),
+            "keepAlive": bool(app.get("keepAlive")),
+            "keepAliveSuspended": bool(app.get("keepAliveSuspended")),
             "attached": bool(app.get("attached")),
             "lastExit": public_last_exit(app),
             "health": health,
@@ -1703,6 +1975,7 @@ def build_state(cfg, console_port, config_health=None):
         "consolePort": console_port,
         "consolePid": SELF_PID,
         "consoleCwd": BASE_DIR,
+        "consoleAutostart": get_console_autostart(),
         "platform": sys.platform,
         "version": APP_VERSION,
         "schemaVersion": cfg.get("schemaVersion", CURRENT_SCHEMA_VERSION),
@@ -1719,24 +1992,47 @@ def build_state(cfg, console_port, config_health=None):
 # 单标签页约每 2-3 轮重建一次，多标签页请求自动合并（锁内构建排队后
 # 第二个请求直接命中缓存）。配置/进程变更时 invalidate 立即失效。
 STATE_CACHE_TTL = 2.2  # 秒
+# _state_cache_lock 只保护缓存字典本身，绝不能在持有它时再去拿 ConfigStore
+# 的锁：invalidate_state_cache 会在 ConfigStore.update（已持配置锁）内被调用，
+# 若这里反向嵌套（先缓存锁再配置锁）会形成 ABBA 死锁，曾导致整个 API 假死。
+# 构建快照的排队互斥改由 _state_build_lock 承担。
 _state_cache_lock = threading.Lock()
-_state_cache = {"mono": 0.0, "state": None}
+_state_build_lock = threading.Lock()
+_state_cache = {"mono": 0.0, "state": None, "gen": 0}
 
 
 def invalidate_state_cache():
     with _state_cache_lock:
         _state_cache["state"] = None
+        _state_cache["gen"] += 1
+
+
+def _cached_state():
+    with _state_cache_lock:
+        cached = _state_cache["state"]
+        if cached is not None and (
+                time.monotonic() - _state_cache["mono"] < STATE_CACHE_TTL):
+            return cached
+        return None
 
 
 def get_state_snapshot(cfg, console_port):
-    now = time.monotonic()
-    with _state_cache_lock:
-        cached = _state_cache["state"]
-        if cached is not None and now - _state_cache["mono"] < STATE_CACHE_TTL:
-            return cached
+    state = _cached_state()
+    if state is not None:
+        return state
+    with _state_build_lock:
+        # 排队等锁期间可能已有别的线程建好了缓存。
+        state = _cached_state()
+        if state is not None:
+            return state
+        with _state_cache_lock:
+            gen = _state_cache["gen"]
         state = build_state(cfg.snapshot(), console_port, cfg.health_info())
-        _state_cache["mono"] = time.monotonic()
-        _state_cache["state"] = state
+        with _state_cache_lock:
+            # 构建期间配置被改过（gen 变化）就不回写，避免缓存过期快照。
+            if _state_cache["gen"] == gen:
+                _state_cache["mono"] = time.monotonic()
+                _state_cache["state"] = state
         return state
 
 
@@ -1789,6 +2085,322 @@ def build_health(cfg):
         "issues": issues,
         "config": health,
     }
+
+
+# ---------------------------------------------------------------- 技能工作台
+# 扫描本地技能库（~/.agents/skills、~/.claude/skills、~/.codex/skills），
+# 解析各 SKILL.md 的 YAML frontmatter（最小子集解析器，零依赖），按技能名
+# 去重合并，并与 static/skills_zh.json 中文索引合并，由 GET /api/skills 提供。
+# 目录或中文索引变化时缓存自动失效，避免每次请求重扫全部技能文件。
+
+SKILL_ZH_PATH = os.path.join(STATIC_DIR, "skills_zh.json")
+SKILL_MAX_BYTES = 64 * 1024          # 每个 SKILL.md 只读开头 64KB
+SKILL_DESC_MAX = 500                 # 接口里 description 最长保留字符数
+
+_skills_cache = None
+_skills_cache_key = None
+_skills_lock = threading.Lock()
+
+
+def skill_roots():
+    """(id, label, path) 三元组；不存在或不是目录的库会被跳过。"""
+    home = os.path.expanduser("~")
+    candidates = [
+        ("agents", "AI 技能库", os.path.join(home, ".agents", "skills")),
+        ("claude", "Claude 技能库", os.path.join(home, ".claude", "skills")),
+        ("codex", "Codex 技能库", os.path.join(home, ".codex", "skills")),
+    ]
+    return [(rid, label, path) for rid, label, path in candidates
+            if os.path.isdir(path)]
+
+
+def _parse_yaml_scalar(raw):
+    """解析 YAML 标量：去掉引号/注释，展开常用转义；失败按原样返回。"""
+    raw = raw.strip()
+    if not raw or raw.startswith("#"):
+        return ""
+    if len(raw) >= 2 and raw[0] in "\"'" and raw[-1] == raw[0]:
+        inner = raw[1:-1]
+        if raw[0] == '"':
+            return (inner.replace('\\"', '"')
+                    .replace("\\n", "\n").replace("\\t", "\t"))
+        return inner.replace("''", "'")
+    return raw
+
+
+def parse_skill_frontmatter(text):
+    """解析 SKILL.md 开头 --- 分隔的 frontmatter（YAML 最小子集）。
+
+    支持 key: value、带引号标量、| / > 块标量、- 列表、按缩进的简单嵌套
+    （如 metadata:）。无法识别的行一律跳过，解析永不抛异常。
+    键统一转为小写；重复键后者覆盖前者。
+    """
+    text = text.lstrip("\ufeff")
+    if not text.startswith("---"):
+        return {}
+    lines = text.split("\n")
+    end = 1
+    while end < len(lines) and not lines[end].strip().startswith("---"):
+        end += 1
+    body = lines[1:end]
+    root = {}
+    stack = [(-1, root)]   # (缩进, dict)
+    list_owner = None      # (dict, key)：正在收集的列表
+    i, n = 0, len(body)
+    while i < n:
+        line = body[i]
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            i += 1
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if stripped.startswith("- ") and list_owner is not None:
+            owner, key = list_owner
+            owner[key].append(_parse_yaml_scalar(stripped[2:]))
+            i += 1
+            continue
+        while stack and indent <= stack[-1][0]:
+            stack.pop()
+        m = re.match(r"^([^:#]+):\s*(.*)$", stripped)
+        if not m:
+            i += 1
+            continue
+        key = m.group(1).strip().strip("\"'").lower()
+        rest = m.group(2).strip()
+        cur = stack[-1][1] if stack else root
+        if rest in ("|", ">"):
+            block = []
+            j = i + 1
+            while j < n:
+                bl = body[j]
+                if not bl.strip():
+                    block.append("")
+                    j += 1
+                    continue
+                bl_indent = len(bl) - len(bl.lstrip(" "))
+                if bl_indent <= indent:
+                    break
+                block.append(bl.strip() if rest == ">" else bl[bl_indent:])
+                j += 1
+            cur[key] = "\n".join(block).strip("\n")
+            list_owner = None
+            i = j
+            continue
+        if rest:
+            cur[key] = _parse_yaml_scalar(rest)
+            list_owner = None
+            i += 1
+            continue
+        # 值为空：下一行是 "- " 列表则建列表，否则建嵌套 dict
+        if i + 1 < n and re.match(r"^\s+-\s+", body[i + 1]):
+            cur[key] = []
+            list_owner = (cur, key)
+            i += 1
+            continue
+        cur[key] = {}
+        stack.append((indent, cur[key]))
+        list_owner = None
+        i += 1
+    return root
+
+
+def _skill_meta(fm, key, default=""):
+    meta = fm.get("metadata")
+    if isinstance(meta, dict):
+        value = meta.get(key, default)
+        if value is not None:
+            return value
+    return default
+
+
+def _skill_triggers(fm, desc):
+    trigs = fm.get("triggers")
+    if isinstance(trigs, list):
+        out = [str(t).strip() for t in trigs if str(t).strip()]
+        if out:
+            return out[:12]
+    m = re.search(r"(?:Triggers?|触发词?):\s*(.+?)(?:\.\s*)?$", desc)
+    if m:
+        return [t.strip() for t in m.group(1).split(",")
+                if t.strip()][:12]
+    return []
+
+
+def _skill_related(fm):
+    rel = fm.get("related_skills")
+    if not isinstance(rel, list):
+        rel = _skill_meta(fm, "related_skills")
+    if not isinstance(rel, list):
+        return []
+    return [str(r).strip() for r in rel if str(r).strip()][:8]
+
+
+def _read_skill_file(path):
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            return f.read(SKILL_MAX_BYTES + 1)
+    except OSError:
+        return ""
+
+
+def _first_paragraph(text):
+    for para in re.split(r"\n\s*\n", text):
+        para = para.strip()
+        if para:
+            return para[:SKILL_DESC_MAX]
+    return ""
+
+
+def scan_skill_root(root_id, root_label, root_path):
+    """扫描单个技能库的顶层目录，返回技能原始条目列表。"""
+    out = []
+    try:
+        entries = sorted(os.listdir(root_path))
+    except OSError:
+        return out
+    for name in entries:
+        if name.startswith("."):
+            continue
+        skill_file = os.path.join(root_path, name, "SKILL.md")
+        if not os.path.isfile(skill_file):
+            continue
+        text = _read_skill_file(skill_file)
+        fm = parse_skill_frontmatter(text)
+        sid = str(fm.get("name") or name).strip().lower()
+        if not sid:
+            sid = name.lower()
+        desc = str(fm.get("description") or "").strip()
+        if not desc:
+            desc = _first_paragraph(text)
+        out.append({
+            "id": sid,
+            "dir": name,
+            "path": skill_file,
+            "description": desc[:SKILL_DESC_MAX],
+            "version": str(fm.get("version")
+                            or _skill_meta(fm, "version") or "").strip(),
+            "updated": str(_skill_meta(fm, "last_updated") or "").strip(),
+            "triggers": _skill_triggers(fm, desc),
+            "related": _skill_related(fm),
+        })
+    return out
+
+
+def read_skill_lock():
+    """~/.agents/.skill-lock.json：技能来源仓库与安装时间（缺失时返回空）。"""
+    path = os.path.join(os.path.expanduser("~"), ".agents",
+                        ".skill-lock.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    skills = data.get("skills")
+    return skills if isinstance(skills, dict) else {}
+
+
+def load_skill_zh():
+    """读取 static/skills_zh.json 中文索引；支持 {skills:{...}} 或 {id:{...}}。"""
+    try:
+        with open(SKILL_ZH_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    if isinstance(data, dict) and isinstance(data.get("skills"), dict):
+        return data["skills"]
+    return data if isinstance(data, dict) else {}
+
+
+def _skills_cache_fingerprint():
+    """各技能库目录 + 中文索引的 mtime 指纹；任一变化缓存即失效。"""
+    parts = []
+    for _rid, _label, root in skill_roots():
+        try:
+            parts.append(str(os.stat(root).st_mtime_ns))
+        except OSError:
+            parts.append("missing")
+    try:
+        parts.append(str(os.stat(SKILL_ZH_PATH).st_mtime_ns))
+    except OSError:
+        parts.append("no-zh")
+    return ":".join(parts)
+
+
+def build_skills_snapshot():
+    """扫描全部技能库，按技能名去重合并，与中文索引合并后返回快照。"""
+    zh = load_skill_zh()
+    lock = read_skill_lock()
+    roots = skill_roots()
+    by_id = {}
+    root_meta = []
+    for rid, label, root in roots:
+        items = scan_skill_root(rid, label, root)
+        root_meta.append({
+            "id": rid, "label": label, "path": root, "count": len(items),
+        })
+        for it in items:
+            sid = it["id"]
+            entry = by_id.get(sid)
+            if entry is None:
+                entry = dict(it)
+                entry["roots"] = []
+                by_id[sid] = entry
+            entry["roots"].append(rid)
+            for k in ("description", "version", "updated"):
+                if not entry.get(k) and it.get(k):
+                    entry[k] = it[k]
+            if not entry.get("triggers") and it.get("triggers"):
+                entry["triggers"] = it["triggers"]
+            if not entry.get("related") and it.get("related"):
+                entry["related"] = it["related"]
+    skills = []
+    for sid in sorted(by_id):
+        e = by_id[sid]
+        z = zh.get(sid)
+        if not isinstance(z, dict):
+            z = {}
+        lockinfo = lock.get(e.get("dir")) or lock.get(sid) or {}
+        if not isinstance(lockinfo, dict):
+            lockinfo = {}
+        skills.append({
+            "id": sid,
+            "dir": e["dir"],
+            "roots": e["roots"],
+            "category": z.get("category") or "其他",
+            "summary": z.get("summary") or "",
+            "detail": z.get("detail") or "",
+            "usage": z.get("usage") or "",
+            "hasZh": bool(z),
+            "description": e.get("description") or "",
+            "triggers": e.get("triggers") or [],
+            "version": e.get("version") or "",
+            "updated": e.get("updated") or "",
+            "related": e.get("related") or [],
+            "source": lockinfo.get("source") or "",
+            "installedAt": lockinfo.get("installedAt") or "",
+            "path": e.get("path") or "",
+        })
+    categories = sorted({s["category"] for s in skills})
+    return {
+        "generatedAt": time.time(),
+        "roots": root_meta,
+        "categories": categories,
+        "count": len(skills),
+        "skills": skills,
+    }
+
+
+def get_skills_snapshot():
+    """带指纹缓存的技能快照；并发请求共享同一份缓存。"""
+    global _skills_cache, _skills_cache_key
+    with _skills_lock:
+        key = _skills_cache_fingerprint()
+        if _skills_cache is not None and key == _skills_cache_key:
+            return _skills_cache
+        snapshot = build_skills_snapshot()
+        _skills_cache = snapshot
+        _skills_cache_key = key
+        return snapshot
 
 
 def list_themes():
@@ -1847,7 +2459,12 @@ def kill_process(pid, force):
         return False, "进程不存在"
     if uid != SELF_UID:
         return False, "只能结束当前用户的进程"
-    sig = signal.SIGKILL if force else signal.SIGTERM
+    if IS_WIN:
+        # Windows 无 POSIX 信号：SIGTERM/SIGKILL 均映射为 TerminateProcess
+        # （硬杀）。force 对单进程端点无额外语义，仅避免引用不存在的 SIGKILL。
+        sig = signal.SIGTERM
+    else:
+        sig = signal.SIGKILL if force else signal.SIGTERM
     try:
         os.kill(pid, sig)
     except ProcessLookupError:
@@ -1983,14 +2600,20 @@ def _start_app_windows(app, cwd, logf, env, marker, token):
     受控身份 = 锚点 PID + marker 命令行 + PPID 后代树。
     """
     anchor = os.path.join(BASE_DIR, "tools", "win_anchor.py")
-    if not os.path.isfile(anchor):
+    if not IS_FROZEN and not os.path.isfile(anchor):
         logf.close()
         return False, "缺少 tools/win_anchor.py，无法在 Windows 启动应用", None, None, None
     try:
         header = "\n===== 启动于 %s =====\n" % time.strftime("%Y-%m-%d %H:%M:%S")
         logf.write(header.encode("utf-8"))
+        if IS_FROZEN:
+            # 冻结态 sys.executable 是总控台.exe：由 GUI 入口分发 --tool-anchor
+            env = _frozen_child_env(env)
+            args = [sys.executable, "--tool-anchor", marker, app["command"]]
+        else:
+            args = [sys.executable, anchor, marker, app["command"]]
         proc = subprocess.Popen(
-            [sys.executable, anchor, marker, app["command"]],
+            args,
             cwd=cwd, stdout=logf, stderr=subprocess.STDOUT,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             env=env)
@@ -2059,6 +2682,7 @@ def persist_started_app(cfg, app_id, proc, pgid, token):
             target["lastPgid"] = pgid
             target["runToken"] = token
             target["attached"] = False
+            target["keepAliveSuspended"] = False  # 显式/守护启动即解除挂起
             # 批处理任务运行时先保留上一次结果；自然退出或手动停止后再原子覆盖。
             if (target.get("kind") or "service") != "task":
                 target["lastExit"] = None
@@ -2114,37 +2738,50 @@ def pick_path(what):
     return r.stdout.strip().rstrip("/") or None, False
 
 
-def _pick_path_windows(what):
-    """Windows 原生对话框（PowerShell + WinForms）。返回 (path|None, canceled)。"""
-    if what == "dir":
-        script = (
-            "Add-Type -AssemblyName System.Windows.Forms; "
-            "$f = New-Object System.Windows.Forms.FolderBrowserDialog; "
-            "$f.Description = '选择工作目录'; "
-            "$f.ShowNewFolderButton = $true; "
-            "if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) "
-            "{ $f.SelectedPath } else { '__CANCELED__' }")
-    else:
-        script = (
-            "Add-Type -AssemblyName System.Windows.Forms; "
-            "$f = New-Object System.Windows.Forms.OpenFileDialog; "
-            "$f.Title = '选择批处理脚本'; "
-            "$f.Filter = '脚本文件 (*.py;*.ps1;*.bat;*.cmd;*.sh)|*.py;*.ps1;*.bat;*.cmd;*.sh|所有文件 (*.*)|*.*'; "
-            "if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) "
-            "{ $f.FileName } else { '__CANCELED__' }")
-    try:
-        r = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive",
-             "-ExecutionPolicy", "Bypass", "-Command", script],
-            capture_output=True, text=True, errors="replace", timeout=180)
-    except Exception:
+def parse_win_pick_output(stdout, returncode):
+    """解析 tools/win_pick.py 的 stdout。返回 (path|None, canceled)。"""
+    if returncode != 0:
         return None, False
-    if r.returncode != 0:
-        return None, False
-    text = r.stdout.strip()
+    text = (stdout or "").strip().strip('"')
     if text == "__CANCELED__":
         return None, True
-    return text.rstrip("/") or None, False
+    if not text:
+        return None, False
+    if text.endswith(("/", "\\")) and not (
+            len(text) == 3 and text[1] == ":"):
+        text = text[:-1]
+    return text, False
+
+
+def _pick_path_windows(what):
+    """Windows 资源管理器式选择框（独立进程 IFileOpenDialog）。
+
+    必须在子进程里创建：HTTP 工作线程通常不是 STA，直接弹窗会失败或
+    点不进子目录。旧版 FolderBrowserDialog 同样无法双击进入文件夹。
+    """
+    helper = os.path.join(BASE_DIR, "tools", "win_pick.py")
+    if not IS_FROZEN and not os.path.isfile(helper):
+        return None, False
+    kwargs = {
+        "capture_output": True,
+        "text": True,
+        "errors": "replace",
+        "timeout": 180,
+    }
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    kwargs["startupinfo"] = startupinfo
+    kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        if IS_FROZEN:
+            # 冻结态由 GUI 入口分发 --pick；stdout 经管道回传
+            kwargs["env"] = _frozen_child_env()
+            r = subprocess.run([sys.executable, "--pick", what], **kwargs)
+        else:
+            r = subprocess.run([sys.executable, helper, what], **kwargs)
+    except Exception:
+        return None, False
+    return parse_win_pick_output(r.stdout, r.returncode)
 
 
 def command_for_script(path):
@@ -2269,6 +2906,9 @@ def _script_target(tokens, cwd):
 
 def inspect_app_health(app):
     """静态检查配置是否可运行；只读文件系统，绝不执行或展开用户命令。"""
+    if (app.get("kind") or "service") == "link":
+        # 网址卡片不运行命令，无健康风险。
+        return {"status": "ok", "blocking": False, "issues": []}
     issues = []
 
     def add(kind, title, detail, fix, action):
@@ -3046,6 +3686,42 @@ def fetch_favicon(port, host="127.0.0.1"):
     return None, None
 
 
+def fetch_remote_favicon(url):
+    """按完整网址抓站点图标 → (bytes, ext) | (None, None)。仅 http/https，
+    与本地端口版同样的策略：解析 <link rel*icon*>，兜底 /favicon.ico。"""
+    if not re.fullmatch(r"https?://\S+", url or ""):
+        return None, None
+    base = url.rstrip("/")
+    headers = {"User-Agent": "Console/1.0"}
+
+    def _download(target):
+        try:
+            req = urllib.request.Request(target, headers=headers)
+            with urllib.request.urlopen(req, timeout=4) as resp:
+                return resp.read(1024 * 1024), resp.headers.get(
+                    "Content-Type", "")
+        except Exception:
+            return None, None
+
+    candidates = []
+    html, _ = _download(base + "/")
+    if html:
+        text = html.decode("utf-8", errors="replace")
+        for m in ICON_LINK_RE.finditer(text):
+            hm = HREF_RE.search(m.group(0))
+            if hm:
+                candidates.append(
+                    urllib.parse.urljoin(base + "/", hm.group(1)))
+    candidates.append(base + "/favicon.ico")
+    for candidate in candidates[:4]:
+        data, ctype = _download(candidate)
+        if data:
+            ext = sniff_icon_bytes(data, ctype)
+            if ext:
+                return data, ext
+    return None, None
+
+
 def find_app(cfg, app_id):
     for app in cfg.get("apps") or []:
         if app.get("id") == app_id:
@@ -3198,14 +3874,32 @@ def validate_app_fields(data, partial):
     """校验/规范化应用字段。partial=True 时仅校验出现的字段。
     返回 (fields, error)：fields 为规范化后的字段子集。"""
     fields = {}
+    new_kind = data.get("kind")
+    if new_kind is not None and new_kind not in ("service", "task", "link"):
+        return None, "kind 必须是 service/task/link"
     for key in ("name", "command"):
         if key in data:
             v = data[key]
+            if new_kind == "link" and key == "command" and v in (None, ""):
+                fields[key] = ""  # 网址卡片不需要命令
+                continue
             if not isinstance(v, str) or not v.strip():
                 return None, "字段 %s 必须是非空字符串" % key
             fields[key] = v.strip()
         elif not partial:
+            if new_kind == "link" and key == "command":
+                fields[key] = ""
+                continue
             return None, "缺少字段 %s" % key
+    if "url" in data:
+        v = data["url"]
+        if v is not None and (not isinstance(v, str)
+                              or not re.fullmatch(r"https?://\S+", v.strip())
+                              or len(v.strip()) > 2000):
+            return None, "url 必须是 http(s):// 开头的合法网址"
+        fields["url"] = (v.strip() if isinstance(v, str) else None)
+    elif not partial:
+        fields["url"] = None
     if "cwd" in data:
         v = data["cwd"]
         if v is not None and not isinstance(v, str):
@@ -3234,14 +3928,23 @@ def validate_app_fields(data, partial):
         fields["glyph"] = (v or None)
     elif not partial:
         fields["glyph"] = None
+    for key in ("autoStart", "keepAlive"):
+        if key in data:
+            if not isinstance(data[key], bool):
+                return None, "%s 必须是布尔值" % key
+            fields[key] = data[key]
     if "kind" in data:
-        if data["kind"] not in ("service", "task"):
-            return None, "kind 必须是 service/task"
         fields["kind"] = data["kind"]
     elif not partial:
         fields["kind"] = "service"
-    if fields.get("kind") == "task":
-        fields["port"] = None  # 批处理任务无端口语义
+    kind = fields.get("kind")
+    if kind in ("task", "link"):
+        fields["port"] = None  # 任务/网址卡片无端口语义
+    if kind == "link":
+        fields["cwd"] = None
+        fields.setdefault("command", "")
+    elif "url" in fields and fields["url"]:
+        return None, "url 只适用于网址卡片（kind=link）"
     return fields, None
 
 
@@ -3272,6 +3975,7 @@ class ConsoleServer(ThreadingHTTPServer):
         self.console_port = self.server_address[1]
         self.control_token = secrets.token_urlsafe(32)
         self._app_locks = {}
+        self._monitor_stop = threading.Event()
         self._app_locks_guard = threading.Lock()
         self._console_action_guard = threading.Lock()
         self._console_action = None
@@ -3569,6 +4273,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(get_state_snapshot(self.server.cfg,
                                                   self.server.console_port))
                 return
+            if path == "/api/skills":
+                self.send_json(get_skills_snapshot())
+                return
             if path == "/api/console/log":
                 self.handle_console_log(parsed.query)
                 return
@@ -3691,6 +4398,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.discard_body()
                 self.handle_console_stop()
                 return
+            if path == "/api/console/autostart":
+                self.handle_console_autostart()
+                return
             if path == "/api/apps":
                 self.handle_app_create()
                 return
@@ -3703,6 +4413,14 @@ class Handler(BaseHTTPRequestHandler):
                 if action == "start":
                     self.discard_body()
                     self.handle_app_start(app_id)
+                    return
+                if action == "open":
+                    self.discard_body()
+                    self.handle_app_open(app_id)
+                    return
+                if action == "shortcut":
+                    self.discard_body()
+                    self.handle_app_shortcut(app_id)
                     return
                 if action == "stop":
                     self.discard_body()
@@ -3808,6 +4526,21 @@ class Handler(BaseHTTPRequestHandler):
                         "helperPid": helper_pid,
                         "port": self.server.console_port})
 
+    def handle_console_autostart(self):
+        data, err = self.read_json_body()
+        if err:
+            self.send_err(400, err)
+            return
+        enabled = data.get("enabled")
+        if not isinstance(enabled, bool):
+            self.send_err(400, "enabled 必须是布尔值")
+            return
+        ok, error = set_console_autostart(enabled)
+        if not ok:
+            self.send_json({"ok": False, "error": error}, 500)
+            return
+        self.send_json({"ok": True, "enabled": get_console_autostart()})
+
     def handle_console_stop(self):
         reserved, current, _ = self.server.reserve_console_action("stop")
         if not reserved:
@@ -3904,6 +4637,9 @@ class Handler(BaseHTTPRequestHandler):
         if err:
             self.send_err(400, err)
             return
+        if fields.get("kind") == "link" and not fields.get("url"):
+            self.send_err(400, "网址卡片必须提供 url")
+            return
 
         snapshot = self.server.cfg.snapshot()
         new_id = secrets.token_hex(4)
@@ -3913,6 +4649,9 @@ class Handler(BaseHTTPRequestHandler):
                "command": fields["command"], "cwd": fields["cwd"],
                "port": fields["port"], "emoji": fields["emoji"],
                "glyph": fields["glyph"], "kind": fields["kind"],
+               "url": fields["url"],
+               "autoStart": bool(fields.get("autoStart")),
+               "keepAlive": bool(fields.get("keepAlive")),
                "icon": None, "favicon": None, "lastPid": None,
                "lastPgid": None, "runToken": None,
                "attached": False, "lastExit": None,
@@ -3972,10 +4711,37 @@ class Handler(BaseHTTPRequestHandler):
 
     @serialized_app_operation
     def handle_fetch_favicon(self, app_id):
-        """抓取应用有效端口对应站点的 favicon，存为 data/icons/fav-{id}.{ext}。
+        """抓取应用站点 favicon，存为 data/icons/fav-{id}.{ext}。
+        服务卡片按有效端口抓本地站点；网址卡片按配置 url 抓取。
         优先级低于用户自定义 icon/glyph，仅作兜底。"""
         _, app = self._get_app_or_404(app_id)
         if app is None:
+            return
+        if (app.get("kind") or "service") == "link":
+            url = app.get("url")
+            if not url:
+                self.send_json({"ok": False, "error": "该网址卡片没有配置网址"})
+                return
+            data, ext = fetch_remote_favicon(url)
+            if not data:
+                self.send_json({"ok": False, "error": "未找到站点图标"})
+                return
+            fname = "fav-%s.%s" % (app_id, ext)
+            try:
+                _ensure_private_dir(ICONS_DIR)
+                write_private_bytes(os.path.join(ICONS_DIR, fname), data)
+            except OSError as e:
+                self.send_json({"ok": False, "error": "图标保存失败: %s" % e})
+                return
+            icon_url = "/icons/" + fname
+
+            def op(c):
+                target = find_app(c, app_id)
+                if target:
+                    target["favicon"] = icon_url
+
+            self.server.cfg.update(op)
+            self.send_json({"ok": True, "favicon": icon_url})
             return
         live = set(managed_pids(app))
         port = None
@@ -4036,6 +4802,10 @@ class Handler(BaseHTTPRequestHandler):
         _, app = self._get_app_or_404(app_id)
         if app is None:
             return
+        if (app.get("kind") or "service") == "link":
+            self.send_json({"ok": False,
+                            "error": "网址卡片请使用「打开」按钮直接访问，无需运行命令"})
+            return
         if app_alive_sign(app):
             self.send_json({"ok": False, "error": "应用已在运行"})
             return
@@ -4078,6 +4848,77 @@ class Handler(BaseHTTPRequestHandler):
             return
         self.send_json({"ok": True, "pid": proc.pid})
 
+    def handle_app_open(self, app_id):
+        """网址卡片：用系统默认浏览器打开配置的网址（不运行任何命令）。"""
+        _, app = self._get_app_or_404(app_id)
+        if app is None:
+            return
+        if (app.get("kind") or "service") != "link":
+            self.send_json({"ok": False, "error": "该卡片不是网址卡片"})
+            return
+        url = app.get("url")
+        if not url:
+            self.send_json({"ok": False, "error": "该网址卡片没有配置网址"})
+            return
+        try:
+            if IS_WIN:
+                os.startfile(url)  # ShellExecute：默认浏览器，无控制台窗口
+            else:
+                webbrowser.open(url)
+        except OSError as e:
+            self.send_json({"ok": False, "error": "打开浏览器失败: %s" % e},
+                           500)
+            return
+        self.send_json({"ok": True, "url": url})
+
+    def handle_app_shortcut(self, app_id):
+        """在桌面创建快捷方式：双击 = 总控台 --open-app <id>（启动+打开）。"""
+        _, app = self._get_app_or_404(app_id)
+        if app is None:
+            return
+        if not IS_FROZEN:
+            self.send_json({"ok": False,
+                            "error": "仅打包版（总控台.exe）支持创建桌面快捷方式"})
+            return
+        if not IS_WIN:
+            self.send_json({"ok": False, "error": "仅 Windows 支持"})
+            return
+        name = (app.get("name") or "应用").strip()
+
+        def _ps_quote(value):
+            return str(value).replace("'", "''")
+
+        exe_path = sys.executable
+        script = (
+            "$ErrorActionPreference='Stop';"
+            "$ws=New-Object -ComObject WScript.Shell;"
+            "$desk=[Environment]::GetFolderPath('Desktop');"
+            "$path=Join-Path $desk '%s.lnk';"
+            "$lnk=$ws.CreateShortcut($path);"
+            "$lnk.TargetPath='%s';"
+            "$lnk.Arguments='--open-app %s';"
+            "$lnk.IconLocation='%s,0';"
+            "$lnk.WorkingDirectory='%s';"
+            "$lnk.Save();"
+            "Write-Output $path"
+        ) % (_ps_quote(name), _ps_quote(exe_path), app_id,
+             _ps_quote(exe_path), _ps_quote(os.path.dirname(exe_path)))
+        try:
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive",
+                 "-ExecutionPolicy", "Bypass", "-Command", script],
+                capture_output=True, text=True, errors="replace",
+                timeout=20, **_win_hidden_subprocess_kwargs())
+        except Exception as e:
+            self.send_json({"ok": False, "error": "创建快捷方式失败: %s" % e})
+            return
+        path = (r.stdout or "").strip()
+        if r.returncode != 0 or not path:
+            detail = ((r.stderr or "").strip() or "未知错误")[:200]
+            self.send_json({"ok": False, "error": "创建快捷方式失败: %s" % detail})
+            return
+        self.send_json({"ok": True, "path": path, "name": name})
+
     @serialized_app_operation
     def handle_app_stop(self, app_id):
         _, app = self._get_app_or_404(app_id)
@@ -4090,6 +4931,13 @@ class Handler(BaseHTTPRequestHandler):
         if not ok:
             self.send_json({"ok": False, "error": error}, 409)
             return
+        if app.get("keepAlive"):
+            # 手动停止 = 挂起守护，避免守护立刻把服务拉回来。
+            def op(c):
+                target = find_app(c, app_id)
+                if target:
+                    target["keepAliveSuspended"] = True
+            self.server.cfg.update(op)
         self.send_json({"ok": True})
 
     @serialized_app_operation
@@ -4240,6 +5088,12 @@ class Handler(BaseHTTPRequestHandler):
             if not fields:
                 self.send_err(400, "没有可更新的字段")
                 return
+            target_kind = fields.get("kind", (app.get("kind") or "service"))
+            if target_kind == "link" and not fields.get("url", app.get("url")):
+                self.send_err(400, "网址卡片必须提供 url")
+                return
+            if target_kind != "link" and app.get("url") and "url" not in fields:
+                fields["url"] = None  # 离开网址类型时清空 url
             lifecycle_fields = {"command", "cwd", "port", "kind"}
             lifecycle_changed = any(
                 key in fields and fields[key] != app.get(key)
@@ -4512,18 +5366,203 @@ def launcher_main():
         raise
 
 
+# ---------------------------------------------------------------- 开机自启
+
+AUTOSTART_REG_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+AUTOSTART_REG_NAME = "总控台"
+
+
+def _autostart_command():
+    """写入注册表的启动命令（打包版指向 EXE，开发态指向 python server.py）。"""
+    if IS_FROZEN:
+        return '"%s"' % sys.executable
+    return '"%s" "%s"' % (sys.executable, os.path.abspath(__file__))
+
+
+def get_console_autostart():
+    """当前命令是否已注册为开机自启（按值精确比对，可识别路径变更）。"""
+    if not IS_WIN:
+        return False
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_REG_KEY) as key:
+            value, _ = winreg.QueryValueEx(key, AUTOSTART_REG_NAME)
+            return value == _autostart_command()
+    except OSError:
+        return False
+
+
+def set_console_autostart(enabled):
+    if not IS_WIN:
+        return False, "仅 Windows 打包版支持开机自启"
+    try:
+        if enabled:
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER,
+                                  AUTOSTART_REG_KEY) as key:
+                winreg.SetValueEx(key, AUTOSTART_REG_NAME, 0, winreg.REG_SZ,
+                                  _autostart_command())
+        else:
+            try:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                    AUTOSTART_REG_KEY, 0,
+                                    winreg.KEY_SET_VALUE) as key:
+                    winreg.DeleteValue(key, AUTOSTART_REG_NAME)
+            except FileNotFoundError:
+                pass
+        return True, None
+    except OSError as e:
+        return False, "注册表写入失败: %s" % e
+
+
+# ---------------------------------------------------------------- 自启与守护
+
+KEEPALIVE_MIN_STABLE_SEC = 30.0   # 拉起后存活超过该时长视为一次健康运行
+KEEPALIVE_MAX_QUICK_FAILS = 3     # 连续快速失败次数上限
+KEEPALIVE_BLOCK_SEC = 300.0       # 达到上限后的冷却时长
+KEEPALIVE_POLL_SEC = 3.0
+
+_KEEPALIVE_RUNTIME = {}  # app_id -> {"fails", "blocked_until", "started_at"}
+
+
+def _keepalive_port_blocked(app, live):
+    """守护重启前检查：配置端口被卡片外进程占用则跳过（绝不抢端口）。"""
+    port = app.get("port")
+    if not port:
+        return False
+    for pid, p in scan_listeners():
+        if p == port and pid not in live:
+            return True
+    return False
+
+
+def _keepalive_should_start(app):
+    if (app.get("kind") or "service") != "service":
+        return False
+    if not app.get("keepAlive"):
+        return False
+    if app.get("keepAliveSuspended"):
+        return False
+    if app_alive_sign(app):
+        return False
+    if inspect_app_health(app)["blocking"]:
+        return False
+    return True
+
+
+def _keepalive_tick(server):
+    """守护监控单次巡检：对需要守护且已停止的服务按退避策略重启。
+
+    连续快速失败（拉起后 30s 内又退出）达上限后冷却 5 分钟，避免崩溃循环；
+    用户手动「停止」会写 keepAliveSuspended 挂起守护，直到再次启动/重启。
+    """
+    cfg = server.cfg
+    now = time.monotonic()
+    for app in list(cfg.snapshot().get("apps") or []):
+        app_id = app.get("id")
+        if app_alive_sign(app):
+            state = _KEEPALIVE_RUNTIME.get(app_id)
+            if state and state.get("started_at") and \
+                    now - state["started_at"] > KEEPALIVE_MIN_STABLE_SEC:
+                _KEEPALIVE_RUNTIME.pop(app_id, None)
+            continue
+        if not _keepalive_should_start(app):
+            continue
+        state = _KEEPALIVE_RUNTIME.setdefault(
+            app_id, {"fails": 0, "blocked_until": 0.0, "started_at": 0.0})
+        if now < state["blocked_until"]:
+            continue
+        if state["started_at"] and \
+                now - state["started_at"] < KEEPALIVE_MIN_STABLE_SEC:
+            state["fails"] += 1
+            state["started_at"] = 0.0
+            if state["fails"] >= KEEPALIVE_MAX_QUICK_FAILS:
+                state["blocked_until"] = now + KEEPALIVE_BLOCK_SEC
+                state["fails"] = 0
+                LOG.warning("守护重启 %s 连续失败 %d 次，冷却 %d 秒",
+                            app.get("name") or app_id,
+                            KEEPALIVE_MAX_QUICK_FAILS, int(KEEPALIVE_BLOCK_SEC))
+            continue
+        lock = server.try_app_operation(app_id)
+        if lock is None:
+            continue
+        try:
+            current = find_app(cfg.snapshot(), app_id)
+            if not current or not _keepalive_should_start(current):
+                continue
+            if _keepalive_port_blocked(current, set(managed_pids(current))):
+                continue
+            ok, err, proc, pgid, token = start_app(current)
+            if ok and persist_started_app(cfg, app_id, proc, pgid, token):
+                state["started_at"] = time.monotonic()
+                LOG.info("守护已重启服务: %s (pid %d)",
+                         current.get("name") or app_id, proc.pid)
+            else:
+                LOG.warning("守护重启失败: %s", err or "应用状态已变化")
+        finally:
+            lock.release()
+
+
+def _keepalive_loop(server):
+    while not server._monitor_stop.wait(KEEPALIVE_POLL_SEC):
+        try:
+            _keepalive_tick(server)
+        except Exception:
+            LOG.exception("守护巡检失败")
+
+
+def _autostart_boot(server):
+    """总控台启动后，把勾选「随总控台启动」且未挂起的服务拉起（仅一次）。"""
+    time.sleep(1.5)
+    cfg = server.cfg
+    for app in list(cfg.snapshot().get("apps") or []):
+        if (app.get("kind") or "service") != "service":
+            continue
+        if not app.get("autoStart") or app.get("keepAliveSuspended"):
+            continue
+        if app_alive_sign(app) or inspect_app_health(app)["blocking"]:
+            continue
+        lock = server.try_app_operation(app.get("id"))
+        if lock is None:
+            continue
+        try:
+            current = find_app(cfg.snapshot(), app.get("id"))
+            if not current or not current.get("autoStart") \
+                    or current.get("keepAliveSuspended") \
+                    or app_alive_sign(current):
+                continue
+            if _keepalive_port_blocked(current, set(managed_pids(current))):
+                continue
+            ok, err, proc, pgid, token = start_app(current)
+            if ok and persist_started_app(cfg, current["id"], proc, pgid, token):
+                LOG.info("已随总控台启动: %s (pid %d)",
+                         current.get("name") or current["id"], proc.pid)
+            else:
+                LOG.warning("随总控台启动失败: %s", err or "应用状态已变化")
+        finally:
+            lock.release()
+
+
+PENDING_FROZEN_RESTART = {"port": None}
+
+
 def schedule_console_restart(server, preferred_port):
     """启动独立 helper，响应发出后关闭当前 HTTP 服务。"""
-    helper = subprocess.Popen(
-        [sys.executable, os.path.abspath(__file__), "--restart-helper",
-         str(SELF_PID), str(int(preferred_port))],
-        cwd=BASE_DIR, start_new_session=True, close_fds=True)
+    if IS_FROZEN:
+        # 冻结态不拉 helper 子进程：onefile 实例链中 helper 退出会清掉
+        # 新实例的解压目录（_MEI），导致其运行中 import 失败、渲染进程
+        # 无法启动。改由 GUI 入口在服务线程结束后直接拉起新实例。
+        PENDING_FROZEN_RESTART["port"] = int(preferred_port)
+        helper = None
+    else:
+        args = [sys.executable, os.path.abspath(__file__), "--restart-helper",
+                str(SELF_PID), str(int(preferred_port))]
+        helper = subprocess.Popen(
+            args, cwd=BASE_DIR, start_new_session=True, close_fds=True)
 
     def _shutdown():
         time.sleep(0.25)
         server.shutdown()
     threading.Thread(target=_shutdown, daemon=True).start()
-    return helper.pid
+    return helper.pid if helper is not None else os.getpid()
 
 
 def schedule_console_stop(server):
@@ -4541,6 +5580,14 @@ def restart_helper(old_pid, preferred_port):
         time.sleep(0.1)
     if pid_alive(old_pid):
         return 1
+    if IS_FROZEN:
+        # 冻结态拉起新 EXE 实例（GUI 入口解析 --preferred-port），
+        # 避开 os.execv 与 onefile 引导器的兼容问题。
+        subprocess.Popen(
+            [sys.executable, "--preferred-port", str(int(preferred_port))],
+            cwd=os.path.dirname(sys.executable), close_fds=True,
+            env=_frozen_child_env())
+        return 0
     args = [sys.executable, os.path.abspath(__file__),
             "--preferred-port", str(int(preferred_port)), "--no-browser"]
     os.execv(sys.executable, args)
@@ -4576,13 +5623,36 @@ def _run_console(preferred_port=None, open_browser=True):
     print("总控台已启动: http://%s:%d/  (Ctrl+C 停止)" % (HOST, port), flush=True)
     if open_browser:
         open_browser_later(port)
+    threading.Thread(target=_autostart_boot, args=(server,),
+                     name="console-autostart", daemon=True).start()
+    threading.Thread(target=_keepalive_loop, args=(server,),
+                     name="console-keepalive", daemon=True).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        server._monitor_stop.set()
         server.server_close()
         print("已停止", flush=True)
+
+
+def _reopen_stdio_stream(name):
+    """把 sys.stdout/stderr 重建为绑定当前 fd 的文本流（无控制台模式）。
+
+    --windowed 冻结 EXE 里 sys.stdout/stderr 为 None，fd 重定向后必须重建
+    真实流对象，否则后续 print 会抛 AttributeError。
+    """
+    fdnum = 1 if name == "stdout" else 2
+    try:
+        raw = os.fdopen(fdnum, "wb", buffering=0, closefd=False)
+    except OSError:
+        raw = None
+    if raw is None:
+        setattr(sys, name, io.StringIO())
+        return
+    setattr(sys, name, io.TextIOWrapper(
+        raw, encoding="utf-8", errors="replace", line_buffering=True))
 
 
 def redirect_console_output():
@@ -4600,19 +5670,29 @@ def redirect_console_output():
         if IS_WIN:
             # 重定向后 fd 仍是 CRT 文本模式，会与 TextIOWrapper 的
             # 换行翻译叠加成 \r\r\n；切二进制模式只留一层翻译。
+            # 窗口化冻结 EXE 无控制台，fd 0/1/2 可能是无效句柄，
+            # setmode 会抛 EBADF（句柄无效），必须容忍。
             import msvcrt
-            msvcrt.setmode(fd, os.O_BINARY)
-            msvcrt.setmode(1, os.O_BINARY)
-            msvcrt.setmode(2, os.O_BINARY)
+            for _fd in (fd, 1, 2):
+                try:
+                    msvcrt.setmode(_fd, os.O_BINARY)
+                except OSError:
+                    continue
         os.dup2(fd, 1)
         os.dup2(fd, 2)
     finally:
         os.close(fd)
-    for stream in (sys.stdout, sys.stderr):
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name)
+        if stream is None:
+            _reopen_stdio_stream(name)
+            continue
         try:
             stream.reconfigure(line_buffering=True)
-        except (AttributeError, OSError):
-            pass
+        except (AttributeError, OSError, ValueError):
+            # PyInstaller 窗口模式给的是 NullWriter（无 reconfigure），
+            # 或 fd 已失效：一律重建为绑定日志 fd 的真实文本流。
+            _reopen_stdio_stream(name)
 
 
 def main(preferred_port=None, open_browser=True, log_to_file=False):

@@ -13,6 +13,23 @@ from unittest import mock
 
 import server
 
+# Windows cmd 没有 sleep；ping -n 21 约等待 20 秒，保证真实进程测试期间存活。
+LONG_SLEEP_CMD = "ping -n 21 127.0.0.1 > nul" if server.IS_WIN else "sleep 20"
+
+
+def _force_kill_group(proc, pgid):
+    """测试清理：结束整棵受控进程树（跨平台）。"""
+    if not server.stop_target_alive(
+            {"kind": "group", "id": pgid, "members": [proc.pid]}):
+        return
+    if server.IS_WIN:
+        server._win_taskkill(proc.pid, tree=True, force=True)
+    else:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except OSError:
+            pass
+
 
 class HttpHarness:
     def __init__(self):
@@ -295,7 +312,7 @@ class OperationLockTests(unittest.TestCase):
     def setUp(self):
         self.h = HttpHarness()
         app = {**server.Config.APP_DEFAULT,
-               "id": "deadbeef", "name": "Service", "command": "sleep 10",
+               "id": "deadbeef", "name": "Service", "command": LONG_SLEEP_CMD,
                "kind": "service", "cwd": self.h.tmp.name}
         self.h.cfg.update(lambda data: data["apps"].append(app))
 
@@ -397,7 +414,7 @@ class ProcessLifecycleHardeningTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td, \
                 mock.patch.object(server, "LOGS_DIR", td):
             base = {**server.Config.APP_DEFAULT, "id": "deadbeef",
-                    "name": "Service", "command": "sleep 20", "cwd": td}
+                    "name": "Service", "command": LONG_SLEEP_CMD, "cwd": td}
             cfg = self._config_with_app(td, base)
             ok, error, proc, pgid, token = server.start_app(base)
             self.assertTrue(ok, error)
@@ -413,19 +430,14 @@ class ProcessLifecycleHardeningTests(unittest.TestCase):
                 self.assertIsNone(result["lastPid"])
                 self.assertIsNone(result["lastExit"])
             finally:
-                if server.stop_target_alive(
-                        {"kind": "group", "id": pgid, "members": [proc.pid]}):
-                    try:
-                        os.killpg(pgid, signal.SIGKILL)
-                    except OSError:
-                        pass
+                _force_kill_group(proc, pgid)
 
     def test_manual_task_stop_replaces_old_success_with_stopped_result(self):
         with tempfile.TemporaryDirectory() as td, \
                 mock.patch.object(server, "LOGS_DIR", td):
             previous = {"code": 0, "at": 123, "durationSec": 0.1}
             base = {**server.Config.APP_DEFAULT, "id": "deadbeef",
-                    "name": "Task", "kind": "task", "command": "sleep 20",
+                    "name": "Task", "kind": "task", "command": LONG_SLEEP_CMD,
                     "cwd": td, "lastExit": previous}
             cfg = self._config_with_app(td, base)
             ok, error, proc, pgid, token = server.start_app(base)
@@ -446,12 +458,7 @@ class ProcessLifecycleHardeningTests(unittest.TestCase):
                 self.assertGreaterEqual(result["lastExit"]["at"], 1)
                 self.assertNotEqual(result["lastExit"], previous)
             finally:
-                if server.stop_target_alive(
-                        {"kind": "group", "id": pgid, "members": [proc.pid]}):
-                    try:
-                        os.killpg(pgid, signal.SIGKILL)
-                    except OSError:
-                        pass
+                _force_kill_group(proc, pgid)
 
     @unittest.skipIf(server.IS_WIN, "Windows 无 SIGTERM/SIG_IGN 语义（见 test_windows.py）")
     def test_sigterm_timeout_retains_runtime_identity_for_retry(self):
@@ -560,7 +567,10 @@ class StaticFileServingTests(unittest.TestCase):
                 f.write("secret")
             static = os.path.join(td, "static")
             os.mkdir(static)
-            os.symlink(outside, os.path.join(static, "leak.txt"))
+            try:
+                os.symlink(outside, os.path.join(static, "leak.txt"))
+            except OSError as e:
+                self.skipTest("此环境无法创建符号链接: %s" % e)
             with mock.patch.object(server, "STATIC_DIR", static):
                 status, body, _ = self.h.request("GET", "/leak.txt")
             self.assertEqual(status, 404)
@@ -858,7 +868,7 @@ class StateCacheTests(unittest.TestCase):
 
     def setUp(self):
         self._orig_cache = server._state_cache
-        server._state_cache = {"mono": 0.0, "state": None}
+        server._state_cache = {"mono": 0.0, "state": None, "gen": 0}
 
     def tearDown(self):
         server._state_cache = self._orig_cache

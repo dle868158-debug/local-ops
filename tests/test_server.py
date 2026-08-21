@@ -12,6 +12,26 @@ from unittest import mock
 
 import server
 
+# Windows cmd 没有 sleep；ping -n 21 约等待 20 秒，保证真实进程测试期间存活。
+LONG_SLEEP_CMD = "ping -n 21 127.0.0.1 > nul" if server.IS_WIN else "sleep 20"
+
+
+def _force_kill_tree(proc, pgid):
+    """测试清理：结束整棵受控进程树（跨平台）。"""
+    if proc.poll() is not None:
+        return
+    if server.IS_WIN:
+        server._win_taskkill(proc.pid, tree=True, force=True)
+    else:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except OSError:
+            pass
+    try:
+        proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        pass
+
 
 class ParsingTests(unittest.TestCase):
     def test_parse_etime(self):
@@ -242,7 +262,10 @@ class AppHealthTests(unittest.TestCase):
     def test_broken_script_symlink_is_unavailable(self):
         with tempfile.TemporaryDirectory() as td:
             link = os.path.join(td, "job.py")
-            os.symlink(os.path.join(td, "missing.py"), link)
+            try:
+                os.symlink(os.path.join(td, "missing.py"), link)
+            except OSError as e:
+                self.skipTest("此环境无法创建符号链接: %s" % e)
             health = server.inspect_app_health(
                 {"command": server.command_for_script(link), "cwd": td})
         self.assertEqual(health["issues"][0]["kind"], "script-missing")
@@ -542,7 +565,8 @@ class RuntimeStorageTests(unittest.TestCase):
                        CONSOLE_LOG_DIR=logs)
             result = subprocess.run(
                 [sys.executable, server.__file__, "--prepare-storage"],
-                cwd=td, env=env, capture_output=True, text=True, timeout=5)
+                cwd=td, env=env, capture_output=True, timeout=5,
+                encoding="utf-8", errors="replace")
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(os.path.isdir(target))
@@ -562,7 +586,8 @@ class RuntimeStorageTests(unittest.TestCase):
                        CONSOLE_LOG_DIR=os.path.join(td, "logs"))
             result = subprocess.run(
                 [sys.executable, server.__file__, "--prepare-storage"],
-                cwd=td, env=env, capture_output=True, text=True, timeout=5)
+                cwd=td, env=env, capture_output=True, timeout=5,
+                encoding="utf-8", errors="replace")
             self.assertNotEqual(result.returncode, 0)
             self.assertNotIn("总控台已启动", result.stdout + result.stderr)
 
@@ -581,7 +606,8 @@ class RuntimeStorageTests(unittest.TestCase):
             )
             result = subprocess.run(
                 [sys.executable, "-c", script], cwd=server.BASE_DIR,
-                env=env, capture_output=True, text=True, timeout=5)
+                env=env, capture_output=True, timeout=5,
+                encoding="utf-8", errors="replace")
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout, "")
@@ -610,7 +636,7 @@ class ProcessIdentityTests(unittest.TestCase):
     def test_real_started_process_is_identified_and_stoppable(self):
         with tempfile.TemporaryDirectory() as td, \
                 mock.patch.object(server, "LOGS_DIR", td):
-            app = {"id": "deadbeef", "command": "sleep 20", "cwd": td}
+            app = {"id": "deadbeef", "command": LONG_SLEEP_CMD, "cwd": td}
             ok, error, proc, pgid, token = server.start_app(app)
             self.assertTrue(ok, error)
             tracked = dict(app, lastPid=proc.pid, lastPgid=pgid, runToken=token)
@@ -623,14 +649,9 @@ class ProcessIdentityTests(unittest.TestCase):
                 self.assertIsNotNone(target, error)
                 stopped, error = server.signal_app_stop(target)
                 self.assertTrue(stopped, error)
-                proc.wait(timeout=3)
+                proc.wait(timeout=5)
             finally:
-                if proc.poll() is None:
-                    try:
-                        os.killpg(proc.pid, signal.SIGKILL)
-                    except OSError:
-                        pass
-                    proc.wait(timeout=3)
+                _force_kill_tree(proc, pgid)
 
     def test_verified_legacy_process_can_be_stopped_without_port_kill(self):
         app = {"id": "legacy", "lastPid": 999, "lastPgid": None,
@@ -1208,6 +1229,67 @@ class ThemeTests(unittest.TestCase):
             snap = cfg2.snapshot()
             self.assertEqual(snap["uiTheme"], "custom")
             self.assertIsInstance(snap["apps"], list)
+
+
+class StateCacheDeadlockTests(unittest.TestCase):
+    """回归：get_state_snapshot（缓存锁→配置锁）与 Config.update
+    （配置锁→缓存锁 invalidate）曾按相反顺序嵌套加锁，形成 ABBA 死锁，
+    表现为前端轮询撞上任意写配置操作后所有 API 永久无响应。"""
+
+    def test_concurrent_snapshot_and_update_do_not_deadlock(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg = server.Config(os.path.join(td, "config.json"))
+            server.invalidate_state_cache()
+            stop = threading.Event()
+            errors = []
+
+            def poll():
+                try:
+                    while not stop.is_set():
+                        server.get_state_snapshot(cfg, 9600)
+                except Exception as e:  # pragma: no cover - 仅记录
+                    errors.append(e)
+
+            def write():
+                try:
+                    while not stop.is_set():
+                        cfg.update(lambda d: None)
+                except Exception as e:  # pragma: no cover - 仅记录
+                    errors.append(e)
+
+            with mock.patch.object(server, "build_state", return_value={}):
+                threads = [threading.Thread(target=poll, daemon=True)
+                           for _ in range(3)]
+                threads.append(threading.Thread(target=write, daemon=True))
+                for t in threads:
+                    t.start()
+                time.sleep(1.5)
+                stop.set()
+                for t in threads:
+                    t.join(timeout=10)
+                hung = [t for t in threads if t.is_alive()]
+            self.assertFalse(hung, "线程未能退出，疑似死锁: %r" % hung)
+            self.assertFalse(errors, "并发访问抛出异常: %r" % errors)
+            server.invalidate_state_cache()
+
+    def test_invalidate_during_build_discards_stale_snapshot(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg = server.Config(os.path.join(td, "config.json"))
+            server.invalidate_state_cache()
+
+            def build_and_invalidate(*args, **kwargs):
+                # 模拟构建期间配置被其他线程修改。
+                server.invalidate_state_cache()
+                return {"stale": True}
+
+            with mock.patch.object(server, "build_state",
+                                   side_effect=build_and_invalidate):
+                state = server.get_state_snapshot(cfg, 9600)
+            self.assertEqual(state, {"stale": True})
+            # 过期结果返回给本次请求，但不得写入缓存。
+            with server._state_cache_lock:
+                self.assertIsNone(server._state_cache["state"])
+            server.invalidate_state_cache()
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ import { openConfirm, openAppModal, openLogs, getIconVer } from './overlays.js';
 import { configuredPort, actualPorts, hasPortMismatch,
   preferredOpenPort, displayedPorts, portIsOpenable } from './ports.js';
 
-const svcGrid = $('#svcGrid'), taskGrid = $('#taskGrid');
+const svcGrid = $('#svcGrid'), taskGrid = $('#taskGrid'), linkGrid = $('#linkGrid');
 const reorderStatus = $('#reorderStatus');
 /* ---------------- 图标取色光晕 ---------------- */
 function hueFromString(s) {
@@ -55,8 +55,9 @@ function updateCardGlow(card, app) {
 
 const FAVICON_RETRY_DELAYS = [5000, 15000, 60000];
 function maybeFetchFavicon(card, app) {
+  const isLink = (app.kind || 'service') === 'link';
   const port = preferredOpenPort(app);
-  if (app.icon || app.glyph || !app.running || !port) {
+  if (app.icon || app.glyph || (!isLink && (!app.running || !port))) {
     if (app.favicon) card._favFetch = null;
     return;
   }
@@ -66,7 +67,8 @@ function maybeFetchFavicon(card, app) {
     card._favFetch = null;
     return;
   }
-  const signature = String(app.pid || app.lastPid || port);
+  const signature = isLink ? ('url:' + (app.url || ''))
+    : String(app.pid || app.lastPid || port);
   if (!card._favFetch || card._favFetch.signature !== signature) {
     card._favFetch = { signature, attempts: 0, nextAt: 0, inFlight: false };
   }
@@ -149,6 +151,8 @@ function createAppCard() {
   head.append(iconBox, meta);
 
   const cmd = el('div', 'app-cmd');
+  const badges = el('div', 'app-badges');
+  badges.hidden = true;
 
   const actions = el('div', 'app-actions');
   const primary = el('button', 'btn app-primary');
@@ -160,23 +164,27 @@ function createAppCard() {
   bDiag.hidden = true;
   const bRestart = iconBtn('refresh-cw', '重启应用');
   bRestart.hidden = true;
+  const bShortcut = iconBtn('link-2', '创建桌面快捷方式');
   const bEdit = iconBtn('pencil', '编辑');
   const bDel = iconBtn('trash-2', '删除', 'danger');
-  sub.append(bCopy, bLogs, bDiag, bRestart, bEdit, bDel);
+  sub.append(bCopy, bLogs, bDiag, bRestart, bShortcut, bEdit, bDel);
   actions.append(primary, sub);
 
-  card.append(head, cmd, actions);
+  card.append(head, cmd, badges, actions);
   card._r = { iconBox, iconImg, iconGlyph, iconTxt, name, status, dot,
-    stText, stPort, stUp, taskHistory, cmd, primary, copy: bCopy, logs: bLogs,
-    diag: bDiag, restart: bRestart, edit: bEdit, del: bDel };
+    stText, stPort, stUp, taskHistory, cmd, badges, primary, copy: bCopy,
+    logs: bLogs,
+    diag: bDiag, restart: bRestart, shortcut: bShortcut, edit: bEdit,
+    del: bDel };
 
   const id = () => card.dataset.key;
   primary.addEventListener('click', () => toggleApp(id(), primary));
   bCopy.addEventListener('click', async () => {
     const a = findApp(id());
-    const p = preferredOpenPort(a);
-    if (!p) return;
-    const url = localServiceUrl(a, p);
+    if (!a) return;
+    const url = (a.kind || 'service') === 'link' ? a.url
+      : (() => { const p = preferredOpenPort(a); return p ? localServiceUrl(a, p) : null; })();
+    if (!url) return;
     try {
       await navigator.clipboard.writeText(url);
       toast('已复制 ' + url);
@@ -202,16 +210,30 @@ function createAppCard() {
     const a = findApp(id());
     if (a) confirmRestartApp(a);
   });
+  bShortcut.addEventListener('click', async () => {
+    const a = findApp(id());
+    if (!a) return;
+    toast('正在创建桌面快捷方式…');
+    const r = await act(post('/api/apps/' + id() + '/shortcut'));
+    if (r && r.ok !== false) toast('已创建桌面快捷方式：' + r.path);
+  });
   bEdit.addEventListener('click', () => { const a = findApp(id()); if (a) openAppModal(a); });
   bDel.addEventListener('click', () => { const a = findApp(id()); if (a) confirmDeleteApp(a); });
   return card;
 }
 
-/* 主按钮：服务 = 启动/停止；批处理 = 运行/中止。 */
+/* 主按钮：服务 = 启动/停止；批处理 = 运行/中止；网址 = 打开。 */
 function setPrimary(btn, running, kind) {
   const sig = running + '|' + kind;
   if (btn._sig === sig) return;
   btn._sig = sig;
+  if (kind === 'link') {
+    setChildren(btn, icon('arrow-up-right', 13));
+    btn.appendChild(document.createTextNode('打开'));
+    btn.classList.remove('btn-stop');
+    btn.classList.add('btn-accent');
+    return;
+  }
   const label = running ? (kind === 'task' ? '中止' : '停止')
     : (kind === 'task' ? '运行' : '启动');
   setChildren(btn, icon(running ? 'square' : 'play', 13));
@@ -264,10 +286,11 @@ function updateAppCard(card, app) {
   }
   setText(r.name, app.name || '');
   r.name.title = app.name || '';
-  setText(r.cmd, app.command || '');
-  r.cmd.title = app.command || '';
-  /* 状态副行：运行态、端口冲突，以及服务/任务上次退出结果。 */
   const kind = app.kind || 'service';
+  const isLink = kind === 'link';
+  setText(r.cmd, isLink ? (app.url || '') : (app.command || ''));
+  r.cmd.title = isLink ? (app.url || '') : (app.command || '');
+  /* 状态副行：运行态、端口冲突，以及服务/任务上次退出结果。 */
   const isTask = kind === 'task';
   const taskStatus = isTask && app.lastExit ? taskExitStatus(app.lastExit) : '';
   const taskFinished = isTask && !app.running && !!app.lastExit;
@@ -281,14 +304,16 @@ function updateAppCard(card, app) {
   r.dot.classList.toggle('running', !!app.running);
   r.dot.classList.toggle('success', taskSucceeded);
   r.dot.classList.toggle('danger', taskFailed);
-  let stTxt = app.running ? '运行中' : (app.port ? '已停止' : '未运行');
+  let stTxt = isLink ? '网址'
+    : (app.running ? '运行中' : (app.port ? '已停止' : '未运行'));
   let stFail = false;
   let taskHistoryText = '';
   if (app.portConflict) {
     stTxt = '配置冲突';
     stFail = true;
   } else if (app.portOccupied) {
-    stTxt = '端口被占用';
+    /* 端口被外部进程占用：给出明细 + 供认领/打开的诊断入口 */
+    stTxt = '端口被外部占用' + (app.port ? ' :' + app.port : '');
     stFail = true;
   } else if (portMismatch) {
     stTxt = '端口配置不一致';
@@ -334,7 +359,7 @@ function updateAppCard(card, app) {
   /* 运行中展示并打开实际监听端口；停止时才展示配置端口。 */
   const effPorts = displayedPorts(app);
   const effPort = preferredOpenPort(app);
-  r.copy.hidden = !effPort;
+  r.copy.hidden = !effPort && !isLink;
   if (effPort) {
     r.stPort.hidden = false;
     setText(r.stPort, portMismatch
@@ -377,9 +402,9 @@ function updateAppCard(card, app) {
     setText(r.stUp, '');
   }
   setPrimary(r.primary, !!app.running, kind);
-  const appName = app.name || (isTask ? '任务' : '应用');
-  const primaryVerb = app.running ? (isTask ? '中止' : '停止')
-    : (isTask ? '运行' : '启动');
+  const appName = app.name || (isTask ? '任务' : isLink ? '网址' : '应用');
+  const primaryVerb = isLink ? '打开'
+    : (app.running ? (isTask ? '中止' : '停止') : (isTask ? '运行' : '启动'));
   r.primary.setAttribute('aria-label', primaryVerb + ' ' + appName);
   r.copy.setAttribute('aria-label', '复制 ' + appName + ' 的链接');
   r.logs.setAttribute('aria-label', (taskFailed ? '查看失败日志：' : '查看日志：') + appName);
@@ -389,7 +414,8 @@ function updateAppCard(card, app) {
   r.edit.setAttribute('aria-label', '编辑 ' + appName);
   r.del.setAttribute('aria-label', '删除 ' + appName);
   card.setAttribute('aria-label', appName + '，' + stTxt);
-  r.restart.hidden = !app.running || kind !== 'service';
+  r.logs.hidden = isLink;
+  r.restart.hidden = isLink || !app.running || kind !== 'service';
   const blocked = !app.running &&
     (!!app.portConflict || !!app.portOccupied || !!healthIssue);
   r.primary.disabled = blocked;
@@ -402,10 +428,23 @@ function updateAppCard(card, app) {
   card.classList.toggle('running', !!app.running);
   card.classList.toggle('has-error', !!app.portConflict || !!app.portOccupied
     || portMismatch || launchFailed || !!healthIssue);
-  r.diag.hidden = !launchFailed && !healthIssue;
+  r.diag.hidden = isLink || (!launchFailed && !healthIssue);
   updateCardGlow(card, app);
   r.logs.classList.toggle('attention', taskFailed);
   r.logs.title = taskFailed ? '查看失败日志' : '日志';
+  /* 自启 / 守护徽章（仅服务卡片） */
+  const badgeList = [];
+  if (kind === 'service' && app.autoStart) badgeList.push('自启');
+  if (kind === 'service' && app.keepAlive) {
+    badgeList.push(app.keepAliveSuspended ? '守护·已挂起' : '守护');
+  }
+  r.badges.replaceChildren(...badgeList.map(text => {
+    const chip = el('span', 'app-badge');
+    chip.textContent = text;
+    if (text === '守护·已挂起') chip.classList.add('suspended');
+    return chip;
+  }));
+  r.badges.hidden = !badgeList.length;
   maybeFetchFavicon(card, app);
 }
 
@@ -413,6 +452,15 @@ async function toggleApp(id, button) {
   const app = findApp(id);
   if (!app) return;
   const isTask = (app.kind || 'service') === 'task';
+  const isLink = (app.kind || 'service') === 'link';
+  if (isLink) {
+    toast('正在打开 ' + (app.name || '网址') + '…');
+    const result = await act(post('/api/apps/' + id + '/open'));
+    if (result && result.ok !== false) {
+      toast('已用浏览器打开 ' + (app.name || '网址'));
+    }
+    return;
+  }
   if (button && button.dataset.busy === 'true') return;
   if (!app.running && app.portConflict) {
     toast('端口配置重复，请先编辑其中一项');
@@ -982,16 +1030,24 @@ function finishKeyboardSort(commit) {
 
 export function renderLaunchpad(apps, firstRender) {
   if (drag || keyboardSort) return;  // 排序中轮询不打乱 DOM
-  const svcs = apps.filter(a => (a.kind || 'service') !== 'task');
+  const svcs = apps.filter(a => {
+    const k = a.kind || 'service';
+    return k !== 'task' && k !== 'link';
+  });
   const tasks = apps.filter(a => a.kind === 'task');
+  const links = apps.filter(a => a.kind === 'link');
   const addSvc = $('#addSvcCard');
   const addTask = $('#addTaskCard');
+  const addLink = $('#addLinkCard');
   addSvc.remove();
   addTask.remove();
+  addLink.remove();
   reconcile(svcGrid, svcs, a => a.id, createAppCard, updateAppCard, firstRender);
   svcGrid.prepend(addSvc);                  // 新增入口始终优先可见
   reconcile(taskGrid, tasks, a => a.id, createAppCard, updateAppCard, firstRender);
   taskGrid.prepend(addTask);                // 批处理新增入口始终优先可见
+  reconcile(linkGrid, links, a => a.id, createAppCard, updateAppCard, firstRender);
+  linkGrid.prepend(addLink);                // 网址新增入口始终优先可见
   renderLpKpi(apps, svcs, tasks);
   latestSvcs = svcs;
   latestTasks = tasks;
@@ -999,6 +1055,7 @@ export function renderLaunchpad(apps, firstRender) {
   syncTaskFilterUI();
   setText($('#svcSecCount'), svcs.length ? String(svcs.length) : '');
   setText($('#taskSecCount'), tasks.length ? String(tasks.length) : '');
+  setText($('#linkSecCount'), links.length ? String(links.length) : '');
 }
 
 function syncSvcFilterUI() {

@@ -849,3 +849,25 @@
   .shell-col { height: auto; min-height: 100vh; }
   .quick-actions { justify-content: flex-start; }
 }
+
+/* ---------- 卡片徽章（自启 / 守护）与自动项勾选 ---------- */
+.app-badges {
+  display: flex; gap: 6px; flex-wrap: wrap; margin-top: 2px;
+}
+.app-badge {
+  font-size: 9.5px; line-height: 1; padding: 3px 7px;
+  border-radius: 999px; border: 1px solid var(--line-2);
+  color: var(--ink-3); background: var(--room);
+}
+.app-badge.suspended {
+  color: var(--amber);
+  border-color: color-mix(in srgb, var(--amber) 45%, var(--line-2));
+}
+.auto-checks {
+  display: flex; gap: 20px; flex-wrap: wrap; align-items: center;
+}
+.auto-checks label {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 12.5px; font-weight: 600; color: var(--ink-2); cursor: pointer;
+}
+.auto-checks input { accent-color: var(--accent); width: 15px; height: 15px; }

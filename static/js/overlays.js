@@ -9,6 +9,8 @@ import { $, el, setText, setChildren, icon, escapeHtml,
 /* ---------------- DOM 引用 ---------------- */
 const appModalMask = $('#appModalMask'), appModal = $('#appModal'), appModalTitle = $('#appModalTitle');
 const fName = $('#fName'), fCmd = $('#fCmd'), fCwd = $('#fCwd'), fPort = $('#fPort');
+const fUrl = $('#fUrl'), urlField = $('#urlField'), cwdField = $('#cwdField'), cmdField = $('#cmdField');
+const fAutoStart = $('#fAutoStart'), fKeepAlive = $('#fKeepAlive'), autoField = $('#autoField');
 const kindRow = $('#kindRow'), portField = $('#portField'), fCmdLabel = $('#fCmdLabel');
 const btnPickScript = $('#btnPickScript'), btnPickCwd = $('#btnPickCwd');
 const btnDetectProject = $('#btnDetectProject');
@@ -206,6 +208,7 @@ function modalLifecycleChanged() {
     : readPortValue();
   return fCmd.value.trim() !== (editingAppOriginal.command || '') ||
     (fCwd.value.trim() || null) !== (editingAppOriginal.cwd || null) ||
+    (fUrl.value.trim() || null) !== (editingAppOriginal.url || null) ||
     currentPort !== (editingAppOriginal.port == null ? null : editingAppOriginal.port) ||
     modalKind !== (editingAppOriginal.kind || 'service');
 }
@@ -235,21 +238,31 @@ function refreshEditSaveMode() {
 }
 
 function setModalKind(kind) {
-  modalKind = kind === 'task' ? 'task' : 'service';
+  modalKind = kind === 'task' ? 'task' : (kind === 'link' ? 'link' : 'service');
   kindRow.querySelectorAll('.kind-btn').forEach(b => {
     const active = b.dataset.kind === modalKind;
     b.classList.toggle('active', active);
     b.setAttribute('aria-pressed', String(active));
   });
-  portField.hidden = modalKind === 'task';
-  fPort.disabled = modalKind === 'task';
+  const isLink = modalKind === 'link';
+  portField.hidden = modalKind !== 'service';
+  fPort.disabled = modalKind !== 'service';
+  autoField.hidden = modalKind !== 'service';
+  fAutoStart.disabled = modalKind !== 'service';
+  fKeepAlive.disabled = modalKind !== 'service';
+  urlField.hidden = !isLink;
+  fUrl.disabled = !isLink;
+  cwdField.hidden = isLink;
+  cmdField.hidden = isLink;
+  if (isLink) detectPanel.hidden = true;
   setText(fCmdLabel, modalKind === 'task' ? '执行命令' : '启动命令');
-  fName.placeholder = modalKind === 'task' ? '如：每日备份' : '如：本地博客';
+  fName.placeholder = modalKind === 'task' ? '如：每日备份'
+    : isLink ? '如：DeepSeek Harness' : '如：本地博客';
   fCmd.placeholder = modalKind === 'task'
     ? '选择脚本后自动生成执行命令，也可以手动填写'
     : '选择项目后自动识别启动命令，也可以手动填写';
   appModalTitle.textContent = (editingAppId ? '编辑' : '添加') +
-    (modalKind === 'task' ? '批处理任务' : '服务');
+    (modalKind === 'task' ? '批处理任务' : isLink ? '网址' : '服务');
   refreshEditSaveMode();
 }
 kindRow.querySelectorAll('.kind-btn').forEach(b =>
@@ -268,6 +281,7 @@ export function openAppModal(app, presetKind, focusAction = '') {
     : null;
   editingAppOriginal = app ? {
     command: app.command || '', cwd: app.cwd || null,
+    url: app.url || null,
     port: app.port == null ? null : app.port,
     kind: app.kind || 'service', running: !!app.running,
   } : null;
@@ -279,7 +293,10 @@ export function openAppModal(app, presetKind, focusAction = '') {
   fCmd.value = (app && app.command) || '';
   fCwd.value = (app && app.cwd) || '';
   fPort.value = app && app.port != null ? app.port : '';
-  [fName, fCmd, fCwd, fPort].forEach(clearFieldError);
+  fUrl.value = (app && app.url) || '';
+  fAutoStart.checked = !!(app && app.autoStart);
+  fKeepAlive.checked = !!(app && app.keepAlive);
+  [fName, fCmd, fCwd, fPort, fUrl].forEach(clearFieldError);
   setModalKind(presetKind || (app && app.kind) || 'service');
   appearanceDetails.open = !!(app && (app.icon || app.glyph));
   syncGlyphGrid();
@@ -287,7 +304,8 @@ export function openAppModal(app, presetKind, focusAction = '') {
   const focusTarget = focusAction === 'pick-script' ? btnPickScript
     : focusAction === 'pick-cwd' ? btnPickCwd
       : focusAction === 'edit-command' ? fCmd
-        : app ? fName : (modalKind === 'task' ? btnPickScript : btnPickCwd);
+        : app ? fName : (modalKind === 'task' ? btnPickScript
+          : modalKind === 'link' ? fUrl : btnPickCwd);
   openLayer(appModalMask, focusTarget);
   /* 监听进程的 argv 往往只是框架子进程（如 next-server），不一定适合作为
      下次启动命令。打开认领表单时同时读取项目配置，让用户选择可靠命令。 */
@@ -468,20 +486,37 @@ function rememberSavedApp(app, id, body) {
 
 async function saveApp() {
   const name = fName.value.trim();
-  const command = fCmd.value.trim();
   if (!name) return fieldError(fName, '请填写名称');
-  if (!command) return fieldError(
-    fCmd, modalKind === 'task' ? '请填写执行命令' : '请填写启动命令');
-  const port = modalKind === 'task' ? null : readPortValue();
+  const isLink = modalKind === 'link';
+  let command = '';
+  let url = null;
+  if (isLink) {
+    url = fUrl.value.trim();
+    if (!url) return fieldError(fUrl, '请填写网址');
+    if (!/^https?:\/\/\S+$/.test(url)) {
+      return fieldError(fUrl, '网址需以 http:// 或 https:// 开头');
+    }
+  } else {
+    command = fCmd.value.trim();
+    if (!command) return fieldError(
+      fCmd, modalKind === 'task' ? '请填写执行命令' : '请填写启动命令');
+  }
+  const port = modalKind === 'service' ? readPortValue() : null;
   if (Number.isNaN(port)) return fieldError(fPort, '端口必须是 1–65535 之间的整数');
-  const body = {
-    name,
-    command,
-    cwd: fCwd.value.trim() || null,
-    port,
-    glyph: selectedGlyph || null,
-    kind: modalKind,
-  };
+  const body = isLink
+    ? { name, url, glyph: selectedGlyph || null, kind: modalKind }
+    : {
+        name,
+        command,
+        cwd: fCwd.value.trim() || null,
+        port,
+        glyph: selectedGlyph || null,
+        kind: modalKind,
+      };
+  if (modalKind === 'service') {
+    body.autoStart = fAutoStart.checked;
+    body.keepAlive = fKeepAlive.checked;
+  }
   const wasCreating = !editingAppId;
   const attachRequest = wasCreating && pendingAttach && modalKind === 'service'
     && port === pendingAttach.port ? { ...pendingAttach } : null;
@@ -549,9 +584,10 @@ async function saveApp() {
   }
 }
 
-export function initAppModal({ onAddService, onAddTask }) {
+export function initAppModal({ onAddService, onAddTask, onAddLink }) {
   onAddService.addEventListener('click', () => openAppModal(null, 'service'));
   onAddTask.addEventListener('click', () => openAppModal(null, 'task'));
+  onAddLink.addEventListener('click', () => openAppModal(null, 'link'));
   appCancel.addEventListener('click', closeAppModal);
   appSave.addEventListener('click', saveApp);
   appStopEdit.addEventListener('click', stopEditingApp);
@@ -565,10 +601,12 @@ export function initAppModal({ onAddService, onAddTask }) {
       if (!r || r.canceled || !r.path) return;  // 取消或失败均静默
       const p = r.path;
       fCmd.value = r.command || fallbackScriptCommand(p);
-      const dir = p.slice(0, p.lastIndexOf('/'));
+      const sep = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
+      const dir = sep > 0 ? p.slice(0, sep) : '';
       if (dir && !fCwd.value.trim()) fCwd.value = dir;
       if (!fName.value.trim()) {
-        const base = p.split('/').pop().replace(/\.(command|sh|bash|zsh|py)$/i, '');
+        const file = sep >= 0 ? p.slice(sep + 1) : p;
+        const base = file.replace(/\.(command|sh|bash|zsh|py|ps1|bat|cmd)$/i, '');
         if (base) fName.value = base;
       }
       fCmd.classList.remove('invalid');
@@ -583,7 +621,7 @@ export function initAppModal({ onAddService, onAddTask }) {
     }
   });
 
-  /* 浏览工作目录（macOS 原生选择框） */
+  /* 浏览工作目录（系统原生选择框） */
   btnPickCwd.addEventListener('click', async () => {
     btnPickCwd.disabled = true;
     try {
@@ -647,7 +685,7 @@ export function initAppModal({ onAddService, onAddTask }) {
   });
   fName.addEventListener('input', renderIconPreview);
   /* 非 textarea 字段回车直接保存 */
-  [fName, fCwd, fPort].forEach(inp =>
+  [fName, fCwd, fPort, fUrl].forEach(inp =>
     inp.addEventListener('keydown', e => { if (e.key === 'Enter') saveApp(); }));
 }
 

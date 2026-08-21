@@ -12,6 +12,7 @@ import { $, el, setText, setChildren, icon, escapeHtml,
 import { renderLaunchpad, toggleApp, closePortDiagnostic, closeAppDiagnosis } from './js/launchpad.js';
 import { renderServices, observePortDiscovery,
   suspendPortDiscovery } from './js/services.js';
+import { renderSkills, closeSkillDrawer } from './js/skills.js';
 import { initWidgets, renderWidgets, openLogsCenter, closeLogsCenter,
   openSettingsCenter, closeSettingsCenter, resetFeedBaseline } from './js/widgets.js';
 import { buildGlyphGrid, initAppModal, initLogDrawer, openConfirm,
@@ -39,6 +40,8 @@ const stopConsoleIcon = $('#stopConsoleIcon');
 const stopConsoleLabel = $('#stopConsoleLabel');
 const viewLaunchpad = $('#view-launchpad');
 const viewServices = $('#view-services');
+const viewSkills = $('#view-skills');
+const sideSkills = $('#sideSkills');
 /* 只有 data-view 的导航轨按钮参与视图切换；data-action 按钮由 widgets 代理 */
 const railBtns = [...document.querySelectorAll('.rail-btn[data-view]')];
 const sideLaunch = $('#sideLaunch');
@@ -53,10 +56,13 @@ function switchView(v) {
   localStorage.setItem('console-view', v);
   applyView();
   /* 强制重排以重播视图进入动画 */
-  const active = v === 'launchpad' ? viewLaunchpad : viewServices;
+  const active = v === 'launchpad' ? viewLaunchpad
+    : (v === 'services' ? viewServices : viewSkills);
   active.classList.remove('active');
   void active.offsetWidth;
   active.classList.add('active');
+  /* 切到技能视图立即触发懒加载（renderSkills 内部会校验是否 active） */
+  if (v === 'skills') renderSkills();
 }
 function applyView() {
   const v = state.view;
@@ -74,16 +80,23 @@ function applyView() {
   });
   sideLaunch.hidden = v !== 'launchpad';
   sideSvc.hidden = v !== 'services';
+  sideSkills.hidden = v !== 'skills';
   viewLaunchpad.classList.toggle('active', v === 'launchpad');
   viewServices.classList.toggle('active', v === 'services');
+  viewSkills.classList.toggle('active', v === 'skills');
   viewLaunchpad.setAttribute('aria-hidden', String(v !== 'launchpad'));
   viewServices.setAttribute('aria-hidden', String(v !== 'services'));
-  setText(viewTitle, v === 'launchpad' ? '启动台' : '服务监控');
+  viewSkills.setAttribute('aria-hidden', String(v !== 'skills'));
+  setText(viewTitle, v === 'launchpad' ? '启动台'
+    : (v === 'services' ? '服务监控' : '技能工作台'));
   document.documentElement.dataset.view = v;
-  setText(viewOverline, v === 'launchpad' ? 'Launchpad' : 'Services');
+  setText(viewOverline, v === 'launchpad' ? 'Launchpad'
+    : (v === 'services' ? 'Services' : 'Skills'));
   setText(viewSub, v === 'launchpad'
     ? '一键启动与管理你的本地服务和批处理任务'
-    : '实时掌握本机监听端口与进程负载');
+    : (v === 'services'
+      ? '实时掌握本机监听端口与进程负载'
+      : '一目了然掌握本地技能 · 中文说明'));
 }
 navBtns.forEach(b => b.addEventListener('click', () => switchView(b.dataset.view)));
 railBtns.forEach(b => b.addEventListener('click', () => switchView(b.dataset.view)));
@@ -276,6 +289,7 @@ function render() {
   renderLaunchpad(state.data.apps || [], firstRender);
   renderServices(state.data, firstRender);
   renderWidgets(state.data);
+  renderSkills();
   firstRender = false;
 }
 
@@ -410,8 +424,20 @@ function paletteActions() {
   for (const a of apps) {
     const running = !!a.running;
     const isTask = (a.kind || 'service') === 'task';
+    const isLink = (a.kind || 'service') === 'link';
     const port = openableAppPort(a);
     const name = a.name || '未命名';
+    if (isLink) {
+      items.push({
+        icon: 'arrow-up-right',
+        title: '打开 ' + name,
+        hint: a.url || '网址',
+        on: true,
+        run: () => act(post('/api/apps/' + a.id + '/open', {})),
+      });
+      items.push({ icon: 'pencil', title: '编辑 ' + name, hint: '网址', run: () => openAppModal(a) });
+      continue;
+    }
     items.push({
       icon: running ? 'square' : 'play',
       title: (running ? (isTask ? '中止 ' : '停止 ')
@@ -437,6 +463,7 @@ function paletteActions() {
   }
   items.push({ icon: 'layout-grid', title: '切换到启动台', hint: '视图', run: () => switchView('launchpad') });
   items.push({ icon: 'activity', title: '切换到服务监控', hint: '视图', run: () => switchView('services') });
+  items.push({ icon: 'brain', title: '切换到技能工作台', hint: '视图', run: () => switchView('skills') });
   items.push({
     icon: 'file-text',
     title: '打开日志中心',
@@ -595,6 +622,7 @@ document.addEventListener('keydown', e => {
     else if ($('#appModalMask').classList.contains('open')) closeAppModal();
     else if (paletteMask.classList.contains('open')) closePalette();
     else if ($('#logDrawer').classList.contains('open')) closeLogs();
+    else if ($('#skDrawer').classList.contains('open')) closeSkillDrawer();
   }
 });
 
@@ -608,10 +636,12 @@ setChildren($('#navIconLaunch'), icon('layout-grid', 15));
 setChildren($('#navIconSvc'), icon('activity', 15));
 setChildren($('#railIconLaunch'), icon('rocket', 19));
 setChildren($('#railIconSvc'), icon('activity', 19));
+setChildren($('#railIconSkills'), icon('brain', 19));
+setChildren($('#navIconSkills'), icon('brain', 15));
 setChildren($('#cmdkIcon'), icon('search', 14));
 setChildren($('#paletteIcon'), icon('search', 15));
 buildGlyphGrid();
-initAppModal({ onAddService: $('#addSvcCard'), onAddTask: $('#addTaskCard') });
+initAppModal({ onAddService: $('#addSvcCard'), onAddTask: $('#addTaskCard'), onAddLink: $('#addLinkCard') });
 initLogDrawer();
 initThemeToggle();
 initWidgets();

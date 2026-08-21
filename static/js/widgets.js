@@ -52,6 +52,7 @@ export function initWidgets() {
     else if (action === 'logs') openLogsCenter();
     else if (action === 'settings') openSettingsCenter();
     else if (action === 'batch-stop') batchStopApps();
+    else if (action === 'batch-start') batchStartApps();
   });
   /* 导航轨动作按钮（非视图切换） */
   document.querySelectorAll('.rail-btn[data-action]').forEach(btn => {
@@ -73,6 +74,14 @@ export function initWidgets() {
   $('#setNotify').addEventListener('click', () => {
     toggleTaskNotifications();
     syncSettings();
+  });
+  $('#setAutostart').addEventListener('click', async () => {
+    const current = !!((state.data || {}).consoleAutostart);
+    const r = await act(post('/api/console/autostart', { enabled: !current }));
+    if (r && r.ok !== false) {
+      toast(r.enabled ? '已开启开机自启动' : '已关闭开机自启动');
+      window.__poll();
+    }
   });
   $('#setAppearance').addEventListener('click', e => {
     const tab = e.target.closest('.mini-tab');
@@ -415,6 +424,10 @@ function syncSettings() {
   const sw = $('#setNotify');
   sw.classList.toggle('on', on);
   sw.setAttribute('aria-checked', String(on));
+  const autoOn = !!(state.data || {}).consoleAutostart;
+  const swA = $('#setAutostart');
+  swA.classList.toggle('on', autoOn);
+  swA.setAttribute('aria-checked', String(autoOn));
   const stored = localStorage.getItem('console-theme');
   const mode = stored === 'dark' ? 'dark' : stored === 'light' ? 'light' : 'auto';
   for (const tab of $('#setAppearance').querySelectorAll('.mini-tab')) {
@@ -456,6 +469,42 @@ function batchStopApps() {
         if (result && result.ok !== false) stopped += 1;
       }
       toast('已停止 ' + stopped + ' 个应用');
+      if (window.__poll) window.__poll();
+    },
+  });
+}
+
+/* 批量启动服务：启动所有「未运行」且「健康可启动」的服务卡，逐个真实启动 */
+function batchStartApps() {
+  const apps = (state.data && state.data.apps) || [];
+  const startable = apps.filter(a =>
+    (a.kind || 'service') === 'service'
+    && !a.running
+    && !(a.portOccupied || a.portConflict)
+    && !(a.health && a.health.blocking)
+  );
+  if (!startable.length) {
+    toast('没有可启动的服务（已在运行 / 端口被占 / 配置不可用）');
+    return;
+  }
+  const names = startable.map(a => a.name || '未命名').join('、');
+  openConfirm({
+    title: '批量启动服务',
+    bodyHtml: '确定要启动 <b>' + startable.length + '</b> 个已停止的服务吗？' +
+      '<div class="confirm-detail">' + escapeHtml(names) +
+      '。将逐个通过配置命令真实启动；端口被占或配置失效的会被跳过。</div>',
+    okText: '全部启动',
+    tone: 'primary',
+    onOk: async () => {
+      let started = 0, failed = 0;
+      for (const app of startable) {
+        try {
+          const result = await act(post('/api/apps/' + app.id + '/start', {}));
+          if (result && result.ok !== false) started += 1;
+          else failed += 1;
+        } catch (e) { failed += 1; }
+      }
+      toast('已启动 ' + started + ' 个' + (failed ? '，失败 ' + failed + ' 个' : ''));
       if (window.__poll) window.__poll();
     },
   });

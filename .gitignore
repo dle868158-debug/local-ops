@@ -12,6 +12,7 @@ __pycache__/
 .Python
 .venv/
 venv/
+.buildenv/
 .coverage
 .coverage.*
 coverage.xml
@@ -28,6 +29,8 @@ tmp/
 build/
 dist/
 release/
+build-assets/
 *.zip
 *.tar.gz
 *.sha256
+.gstack/

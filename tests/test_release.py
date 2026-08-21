@@ -58,7 +58,10 @@ class ReleaseFixtureTests(unittest.TestCase):
 
     def test_symlinked_required_source_is_rejected(self):
         target = self.write("target/server.py")
-        (self.root / "server.py").symlink_to(target)
+        try:
+            (self.root / "server.py").symlink_to(target)
+        except OSError as e:
+            self.skipTest("此环境无法创建符号链接: %s" % e)
         with mock.patch.object(release, "INCLUDE", ("server.py",)):
             with self.assertRaisesRegex(SystemExit, "符号链接"):
                 release.iter_release_files()

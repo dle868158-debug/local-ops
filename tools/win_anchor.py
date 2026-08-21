@@ -51,7 +51,8 @@ def _live_descendants(root_pid):
              "[Console]::OutputEncoding=[Text.Encoding]::UTF8; "
              "Get-CimInstance Win32_Process | "
              "Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress"],
-            capture_output=True, timeout=10)
+            capture_output=True, timeout=10,
+            creationflags=CREATE_NO_WINDOW)
         text = out.stdout.decode("utf-8", errors="replace") or ""
     except Exception:
         return True  # 查询失败时保守认为仍在运行
@@ -89,9 +90,19 @@ def main():
         return 1
     _marker, command = sys.argv[1], sys.argv[2]
     batch = _batch_file(command)
+    # CREATE_NO_WINDOW 下若不显式传递标准句柄，子进程会拿到隐藏控制台，
+    # 输出全部丢失（日志文件只剩启动头）。必须把本进程继承到的日志句柄
+    # 显式交给子进程（STARTF_USESTDHANDLES 路径）。
+    try:
+        out_fd = sys.stdout.fileno()
+    except (AttributeError, OSError, ValueError):
+        out_fd = None
     try:
         proc = subprocess.Popen(
             ["cmd", "/d", "/c", batch],
+            stdin=subprocess.DEVNULL,
+            stdout=out_fd,
+            stderr=subprocess.STDOUT if out_fd is not None else None,
             creationflags=CREATE_NO_WINDOW)
     except OSError:
         return 1

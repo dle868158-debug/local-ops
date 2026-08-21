@@ -261,6 +261,14 @@ class FrontendAccessibilityContractTests(unittest.TestCase):
         self.assertIn("两张卡片也可以保存相同端口", launchpad)
         self.assertIn("openAppModal(app)", launchpad)
 
+    def test_pick_dialog_survives_windows_paths_and_long_wait(self):
+        core = (ROOT / "static/js/core.js").read_text(encoding="utf-8")
+        overlays = (ROOT / "static/js/overlays.js").read_text(encoding="utf-8")
+        self.assertIn("const PICK_TIMEOUT_MS = 180000", core)
+        self.assertIn("path === '/api/pick' ? PICK_TIMEOUT_MS", core)
+        self.assertIn("p.lastIndexOf('\\\\')", overlays)
+        self.assertIn("浏览工作目录（系统原生选择框）", overlays)
+
     def test_create_actions_stay_in_launchpad_and_global_palette(self):
         html = (ROOT / "static/index.html").read_text(encoding="utf-8")
         app = (ROOT / "static/app.js").read_text(encoding="utf-8")

@@ -124,6 +124,8 @@ export const GLYPHS = ['rocket', 'globe', 'terminal', 'server', 'database', 'bot
 
 /* ---------------- API ---------------- */
 const REQUEST_TIMEOUT_MS = 12000;
+/* 系统文件/目录选择框可能要等用户在资源管理器里点很久，不能用普通写操作超时。 */
+const PICK_TIMEOUT_MS = 180000;
 
 /* 变更代际：每次写操作成功后 +1。轮询响应到达时若代际已变，说明数据
    是操作生效前发出的旧快照，前端会丢弃并立即补一轮，避免旧状态回退。 */
@@ -135,7 +137,8 @@ export function bumpMutationEpoch() { mutationEpoch += 1; }
 
 async function req(method, path, body) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timeoutMs = path === '/api/pick' ? PICK_TIMEOUT_MS : REQUEST_TIMEOUT_MS;
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   const opt = { method, signal: controller.signal };
   if (body !== undefined) {
     opt.headers = { 'Content-Type': 'application/json' };
@@ -224,7 +227,7 @@ export function closeLayer(layer) {
 }
 const LAYER_IDS = ['#confirmMask', '#portDiagMask',
   '#appDiagMask', '#appModalMask', '#paletteMask', '#logDrawer',
-  '#logsMask', '#settingsMask'];
+  '#logsMask', '#settingsMask', '#skDrawer'];
 export function activeLayer() {
   for (const id of LAYER_IDS) {
     const layer = $(id);
@@ -277,7 +280,10 @@ document.addEventListener('animationend', e => {
 
 /* ---------------- 全局状态 ---------------- */
 export const state = {
-  view: localStorage.getItem('console-view') === 'services' ? 'services' : 'launchpad',
+  view: (() => {
+    const v = localStorage.getItem('console-view');
+    return (v === 'services' || v === 'skills') ? v : 'launchpad';
+  })(),
   data: null,
   lastUpdate: null,
   restartingFrom: null,

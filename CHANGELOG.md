@@ -10,12 +10,28 @@
 
 ### Added
 
+- **技能工作台**：第三个主视图（导航轨 + 顶栏 tab），把本机已安装的 AI 技能集中展示并全部配上中文说明。
+  - 后端新增 `GET /api/skills`：扫描 `~/.agents/skills`、`~/.claude/skills`、`~/.codex/skills` 三个技能库，用零依赖的 YAML frontmatter 子集解析器提取技能元数据，按技能名去重合并；与 `static/skills_zh.json` 中文索引（分类/简介/详解/使用场景）合并，并附带 `~/.agents/.skill-lock.json` 的来源仓库与安装时间；内存缓存按目录 mtime 指纹自动失效。
+  - 中文索引：为当前 118 个唯一技能全量生成中文说明（`static/skills_zh.json`），缺失中文的技能在界面明确标注「暂无中文」并回退原文，不误导。
+  - 前端：懒加载 `/api/skills`（仅视图激活时拉取，不进 2s 轮询），概览统计（总数/分类/中文覆盖/技能库）、分类与技能库双筛选芯片、中文/英文/触发词搜索、卡片网格（中文简介 + 分类/来源徽标 + 版本）与详情抽屉（中文详解、触发方式、元信息、原始英文描述、关联技能跳转）、「刷新」按钮强制重拉；命令面板（⌘K）新增「切换到技能工作台」。
+  - 新增 `tests/test_skills.py`（frontmatter 解析、库扫描、去重合并、中文索引合并、缓存指纹），`AGENTS.md`/`README.md` 同步三视图与 `/api/skills` 契约。
+
+### Fixed
+
+- 修复状态缓存锁与配置锁按相反顺序嵌套导致的 ABBA 死锁：前端 2 秒一次的状态轮询恰好撞上任意写配置操作（如点「停止」）时，所有 API 从此永久无响应，页面只能强杀进程重启。现在缓存锁只保护缓存字典本身，快照构建由独立构建锁排队，并用代数（generation）防止失效后写回过期快照。附并发回归测试。
+- 修复 Windows 上 `/api/state` 每次构建约 13 秒（超过前端 12 秒超时）的性能问题：进程表从 PowerShell `Get-CimInstance`（单次 2-3 秒、每轮多次）改为原生 Toolhelp 快照 + PEB 命令行读取（全表约 30 毫秒），总内存改用 `GlobalMemoryStatusEx`。CIM 保留为原生路径异常时的退路。
+- 修复 Windows 上应用日志只有启动头、没有任何子进程输出的问题：`CREATE_NO_WINDOW` 下锚点子进程拿到隐藏控制台，须显式把继承的日志句柄传给子进程（附回归测试）。
+- 修复 Windows 上点「选择…」选工作区文件夹时对话框点不进子目录、且约 12 秒后请求超时只能刷新页面的问题：改为资源管理器式文件夹选择框，并把该接口超时放宽到 180 秒。
+- 测试套件 Windows 可移植性：真实进程用例改用跨平台长驻命令（`sleep` 在 cmd 不存在导致进程秒退、误报），无符号链接特权时跳过 symlink 用例，读取子进程输出显式按 UTF-8 解码（中文系统默认 GBK 会解码失败）。
+
+### Added
+
 - **Windows 10/11 适配**：后端可在 Windows 上完整运行（Python 3.12 标准库）。
   - 进程扫描改用 `netstat -ano -p tcp` 与 PowerShell `Get-CimInstance`（CPU% 暂置 0，内存用 WorkingSet 占比）。
   - 受控进程模型改为「锚点进程 + 随机 token 命令行 + PPID 后代树」：`tools/win_anchor.py` 以临时 `.cmd` 批处理执行用户命令，等整棵进程树清空后以原退出码退出，等价于 macOS 的 bash 包装语义。
   - 停止应用用 `taskkill /T`（先优雅、失败自动升级 `/F` 树杀）；`pid_alive` 改用 OpenProcess + GetExitCodeProcess（`os.kill(pid,0)` 在 Windows 上对已退出进程仍返回成功）。
   - 实例锁改用 `msvcrt.locking` 回退（fcntl 仅 POSIX）；数据目录默认 `%APPDATA%\总控台` 与 `%LOCALAPPDATA%\总控台\Logs`。
-  - 工作目录经 PEB 只读读取（`NtQueryInformationProcess`，ctypes）；文件/目录选择框用 PowerShell + WinForms。
+  - 工作目录经 PEB 只读读取（`NtQueryInformationProcess`，ctypes）；文件/目录选择框用 `tools/win_pick.py`（IFileOpenDialog）。
   - 新增 `start.bat` 启动器；项目识别在 Windows 上用 `python`/`py -3` 并识别 `.bat/.cmd/.ps1` 启动脚本。
   - `/api/state` 与 `/api/health` 增加 `platform` 字段，前端重启/停止提示按平台显示启动器名。
   - 新增 `tests/test_windows.py`（Windows 专属解析与真实生命周期测试），macOS 专属测试在 Windows 上显式跳过；CI 增加 Windows 检查 job（含真实启动冒烟测试）。

@@ -114,6 +114,7 @@ def check_required_files() -> str:
         "start.command",
         "start.bat",
         "tools/win_anchor.py",
+        "tools/win_pick.py",
         "tests/test_server.py",
         "docs/screenshots/ops-launchpad.jpg",
         "docs/screenshots/ops-services.jpg",

@@ -160,6 +160,25 @@ class WindowsProcessTests(unittest.TestCase):
                 if server.pid_alive(proc.pid):
                     server.stop_pid_tree(proc.pid)
 
+    def test_task_output_reaches_log_file(self):
+        """回归：CREATE_NO_WINDOW 下锚点子进程曾拿到隐藏控制台，
+        echo/服务输出全部丢失，日志只剩启动头。"""
+        with tempfile.TemporaryDirectory() as td, \
+                mock.patch.object(server, "LOGS_DIR", td):
+            app = {**server.Config.APP_DEFAULT, "id": "win000003",
+                   "kind": "task", "cwd": td,
+                   "command": "echo anchor-log-ok"}
+            ok, error, proc, _, _ = server.start_app(app)
+            self.assertTrue(ok, error)
+            try:
+                self.assertEqual(proc.wait(timeout=20), 0)
+            finally:
+                if server.pid_alive(proc.pid):
+                    server.stop_pid_tree(proc.pid)
+            with open(os.path.join(td, "win000003.log"),
+                      encoding="utf-8", errors="replace") as f:
+                self.assertIn("anchor-log-ok", f.read())
+
     def test_service_lifecycle_managed_stop(self):
         port = _free_port()
         with tempfile.TemporaryDirectory() as td, \
@@ -183,7 +202,12 @@ class WindowsProcessTests(unittest.TestCase):
                 snap = server.ps_snapshot({proc.pid})
                 self.assertIn("console-run:" + token,
                               snap.get(proc.pid, {}).get("args", ""))
-                self.assertIn(port, {p for _, p in server.scan_listeners()})
+                # 原生扫描远快于服务绑定端口，需轮询等待监听出现。
+                listening = set()
+                while time.time() < deadline and port not in listening:
+                    time.sleep(0.3)
+                    listening = {p for _, p in server.scan_listeners()}
+                self.assertIn(port, listening)
                 stopped, error = server.stop_app_and_clear(
                     cfg, tracked, timeout=10)
                 self.assertTrue(stopped, error)
@@ -197,6 +221,41 @@ class WindowsProcessTests(unittest.TestCase):
         env = server.build_launch_env("win-secret", {"PATH": "C:\\bin"})
         self.assertEqual(env["PATH"], "C:\\bin")
         self.assertEqual(env[server.RUN_TOKEN_ENV], "win-secret")
+
+    def test_parse_win_pick_output(self):
+        self.assertEqual(server.parse_win_pick_output("__CANCELED__\n", 0),
+                         (None, True))
+        self.assertEqual(
+            server.parse_win_pick_output("C:\\Users\\demo\\blog\n", 0),
+            ("C:\\Users\\demo\\blog", False))
+        self.assertEqual(server.parse_win_pick_output("", 1), (None, False))
+
+    def test_win_pick_helper_com_creates(self):
+        helper = os.path.join(os.path.dirname(server.__file__),
+                              "tools", "win_pick.py")
+        result = subprocess.run(
+            [sys.executable, helper, "--self-test"],
+            capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_pick_path_windows_uses_helper(self):
+        helper = os.path.join(os.path.dirname(server.__file__),
+                              "tools", "win_pick.py")
+
+        class Result:
+            returncode = 0
+            stdout = "D:\\proj\\app\n"
+            stderr = ""
+
+        with mock.patch.object(server.subprocess, "run",
+                               return_value=Result()) as run:
+            path, canceled = server._pick_path_windows("dir")
+        self.assertEqual(path, "D:\\proj\\app")
+        self.assertFalse(canceled)
+        args = run.call_args[0][0]
+        self.assertEqual(args[0], sys.executable)
+        self.assertEqual(args[1], helper)
+        self.assertEqual(args[2], "dir")
 
 
 if __name__ == "__main__":
