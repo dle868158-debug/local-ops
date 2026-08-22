@@ -20,6 +20,20 @@ import sys
 from pathlib import Path
 
 
+def _configure_utf8_output():
+    """Keep Chinese diagnostics usable under Windows CI legacy code pages."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
+    # Child Python processes (notably unittest discovery) need the same mode.
+    os.environ["PYTHONUTF8"] = "1"
+    os.environ["PYTHONIOENCODING"] = "utf-8"
+
+
+_configure_utf8_output()
+
+
 ROOT = Path(__file__).resolve().parents[1]
 STATIC = ROOT / "static"
 SEMVER_RE = re.compile(

@@ -15,6 +15,18 @@ import sys
 
 from PIL import Image
 
+
+def _configure_utf8_output():
+    """Keep Chinese asset paths printable under Windows CI code pages."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
+
+
+_configure_utf8_output()
+
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, "static", "assets", "console-app-icon.png")
 OUT_DIR = os.path.join(ROOT, "build-assets")
