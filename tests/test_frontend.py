@@ -315,6 +315,26 @@ class FrontendAccessibilityContractTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertTrue((ROOT / "static/assets" / name).is_file())
 
+    def test_orchestration_fields_are_editable_and_submitted(self):
+        html = (ROOT / "static/index.html").read_text(encoding="utf-8")
+        overlays = (ROOT / "static/js/overlays.js").read_text(encoding="utf-8")
+        for field_id in (
+            "fGroup", "fTags", "fDependsOn", "fHealthType", "fHealthTarget",
+            "fRestartPolicy", "fMaxRestarts", "fRestartDelay",
+        ):
+            self.assertIn(f'id="{field_id}"', html)
+        self.assertIn("body.dependsOn", overlays)
+        self.assertIn("body.healthCheck", overlays)
+        self.assertIn("body.restartPolicy", overlays)
+
+    def test_portable_config_controls_are_wired(self):
+        html = (ROOT / "static/index.html").read_text(encoding="utf-8")
+        widgets = (ROOT / "static/js/widgets.js").read_text(encoding="utf-8")
+        self.assertIn('id="setExportConfig"', html)
+        self.assertIn('id="setImportConfig"', html)
+        self.assertIn("/api/config/export", widgets)
+        self.assertIn("/api/config/import", widgets)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -35,12 +35,12 @@ chmod +x docker-start.sh
 docker build -t local-console:latest .
 
 # 2. 用 docker-compose 启动（推荐）
-docker-compose up -d
+docker compose up -d --build
 
 # 3. 或直接用 docker run 启动
 docker run -d \
   --name local-console \
-  -p 9600:9600 \
+  -p 127.0.0.1:9600:9600 \
   -v console-data:/app/data \
   -v console-logs:/app/logs \
   --restart unless-stopped \
@@ -75,7 +75,7 @@ docker inspect console-data
 
 ```bash
 # 使用 docker-compose
-docker-compose down
+docker compose down
 
 # 或直接停止容器
 docker stop local-console
@@ -93,7 +93,7 @@ docker ps | grep local-console
 ```bash
 docker logs -f local-console
 # 或使用 docker-compose
-docker-compose logs -f
+docker compose logs -f
 ```
 
 ### 进入容器
@@ -105,7 +105,7 @@ docker exec -it local-console bash
 ```bash
 docker restart local-console
 # 或
-docker-compose restart
+docker compose restart
 ```
 
 ## 📊 健康检查
@@ -228,7 +228,8 @@ docker exec local-console ls -la /app/data
 
 ## 🔐 安全建议
 
-1. **仅在本地网络使用**：默认绑定 0.0.0.0，适合单机使用
+1. **仅限本机访问**：官方 Compose 只发布到宿主机 `127.0.0.1:9600`
+2. **容器能力边界**：容器只能看到容器内进程，管理 Windows 宿主服务请使用原生版
 2. **备份配置**：定期备份 `/app/data` 目录
 3. **不要使用 root**：使用标准用户运行容器
 4. **避免敏感信息**：命令行中不要包含密码或密钥
@@ -257,13 +258,13 @@ docker run \
 
 ```bash
 # 停止旧容器
-docker-compose down
+docker compose down
 
 # 构建新镜像
 docker build -t local-console:latest --no-cache .
 
 # 启动新容器
-docker-compose up -d
+docker compose up -d --build
 ```
 
 ## 📞 获取帮助

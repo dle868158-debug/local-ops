@@ -871,3 +871,22 @@
   font-size: 12.5px; font-weight: 600; color: var(--ink-2); cursor: pointer;
 }
 .auto-checks input { accent-color: var(--accent); width: 15px; height: 15px; }
+
+.field-grid-two,
+.field-grid-three {
+  display: grid;
+  gap: 12px;
+}
+.field-grid-two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.field-grid-three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.field-grid-two > .field,
+.field-grid-three > .field { min-width: 0; }
+.runtime-details { margin-bottom: 12px; }
+.runtime-details select[multiple] { min-height: 92px; }
+.set-row-stack { align-items: stretch; flex-direction: column; gap: 10px; }
+.set-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+@media (max-width: 640px) {
+  .field-grid-two,
+  .field-grid-three { grid-template-columns: 1fr; gap: 0; }
+}

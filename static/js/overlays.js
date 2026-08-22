@@ -4,13 +4,19 @@
    ============================================================ */
 import { $, el, setText, setChildren, icon, escapeHtml,
   post, put, del, act, toast, openLayer, closeLayer,
-  GLYPHS, findApp, bumpMutationEpoch } from './core.js';
+  GLYPHS, state, findApp, bumpMutationEpoch } from './core.js';
 
 /* ---------------- DOM 引用 ---------------- */
 const appModalMask = $('#appModalMask'), appModal = $('#appModal'), appModalTitle = $('#appModalTitle');
 const fName = $('#fName'), fCmd = $('#fCmd'), fCwd = $('#fCwd'), fPort = $('#fPort');
+const fGroup = $('#fGroup'), fTags = $('#fTags');
 const fUrl = $('#fUrl'), urlField = $('#urlField'), cwdField = $('#cwdField'), cmdField = $('#cmdField');
 const fAutoStart = $('#fAutoStart'), fKeepAlive = $('#fKeepAlive'), autoField = $('#autoField');
+const runtimeDetails = $('#runtimeDetails'), fDependsOn = $('#fDependsOn');
+const fHealthType = $('#fHealthType'), fHealthTarget = $('#fHealthTarget');
+const fHealthInterval = $('#fHealthInterval'), fHealthThreshold = $('#fHealthThreshold');
+const fHealthTimeout = $('#fHealthTimeout'), fRestartPolicy = $('#fRestartPolicy');
+const fMaxRestarts = $('#fMaxRestarts'), fRestartDelay = $('#fRestartDelay');
 const kindRow = $('#kindRow'), portField = $('#portField'), fCmdLabel = $('#fCmdLabel');
 const btnPickScript = $('#btnPickScript'), btnPickCwd = $('#btnPickCwd');
 const btnDetectProject = $('#btnDetectProject');
@@ -250,6 +256,10 @@ function setModalKind(kind) {
   autoField.hidden = modalKind !== 'service';
   fAutoStart.disabled = modalKind !== 'service';
   fKeepAlive.disabled = modalKind !== 'service';
+  runtimeDetails.hidden = modalKind !== 'service';
+  runtimeDetails.querySelectorAll('input, select').forEach(input => {
+    input.disabled = modalKind !== 'service';
+  });
   urlField.hidden = !isLink;
   fUrl.disabled = !isLink;
   cwdField.hidden = isLink;
@@ -263,7 +273,17 @@ function setModalKind(kind) {
     : '选择项目后自动识别启动命令，也可以手动填写';
   appModalTitle.textContent = (editingAppId ? '编辑' : '添加') +
     (modalKind === 'task' ? '批处理任务' : isLink ? '网址' : '服务');
+  syncHealthTarget();
   refreshEditSaveMode();
+}
+
+function syncHealthTarget() {
+  const kind = fHealthType.value;
+  fHealthTarget.disabled = modalKind !== 'service' || kind === 'none' || kind === 'process';
+  fHealthTarget.placeholder = kind === 'http'
+    ? 'http://127.0.0.1:端口/health'
+    : kind === 'tcp' ? '留空则使用服务端口' : '无需填写';
+  if (kind === 'none' || kind === 'process') fHealthTarget.value = '';
 }
 kindRow.querySelectorAll('.kind-btn').forEach(b =>
   b.addEventListener('click', () => setModalKind(b.dataset.kind)));
@@ -290,14 +310,43 @@ export function openAppModal(app, presetKind, focusAction = '') {
   removeStoredIcon = false;
   selectedGlyph = (app && app.glyph) || null;
   fName.value = (app && app.name) || '';
+  fGroup.value = (app && app.group) || '';
+  fTags.value = app && Array.isArray(app.tags) ? app.tags.join(', ') : '';
   fCmd.value = (app && app.command) || '';
   fCwd.value = (app && app.cwd) || '';
   fPort.value = app && app.port != null ? app.port : '';
   fUrl.value = (app && app.url) || '';
   fAutoStart.checked = !!(app && app.autoStart);
-  fKeepAlive.checked = !!(app && app.keepAlive);
-  [fName, fCmd, fCwd, fPort, fUrl].forEach(clearFieldError);
+  const restartPolicy = (app && app.restartPolicy)
+    || (app && app.keepAlive ? 'always' : 'never');
+  fKeepAlive.checked = restartPolicy !== 'never';
+  fRestartPolicy.value = restartPolicy;
+  fMaxRestarts.value = app && Number.isInteger(app.maxRestarts) ? app.maxRestarts : 3;
+  fRestartDelay.value = app && Number.isInteger(app.restartDelaySec) ? app.restartDelaySec : 3;
+  const health = (app && app.healthCheck) || {};
+  fHealthType.value = health.type || 'none';
+  fHealthTarget.value = health.type === 'http' ? (health.url || '')
+    : health.type === 'tcp' && health.port ? String(health.port) : '';
+  fHealthInterval.value = Number.isInteger(health.intervalSec) ? health.intervalSec : 10;
+  fHealthThreshold.value = Number.isInteger(health.failureThreshold) ? health.failureThreshold : 3;
+  fHealthTimeout.value = Number.isInteger(health.timeoutSec) ? health.timeoutSec : 2;
+  const selectedDependencies = new Set(app && Array.isArray(app.dependsOn) ? app.dependsOn : []);
+  fDependsOn.replaceChildren(...(((state.data && state.data.apps) || [])
+    .filter(candidate => candidate.id !== editingAppId && (candidate.kind || 'service') === 'service')
+    .map(candidate => {
+      const option = document.createElement('option');
+      option.value = candidate.id;
+      option.textContent = candidate.name || candidate.id;
+      option.selected = selectedDependencies.has(candidate.id);
+      return option;
+    })));
+  runtimeDetails.open = !!(app && ((app.dependsOn || []).length
+    || (health.type && health.type !== 'none') || restartPolicy !== 'never'));
+  [fName, fGroup, fTags, fCmd, fCwd, fPort, fUrl, fHealthTarget,
+    fHealthInterval, fHealthThreshold, fHealthTimeout,
+    fMaxRestarts, fRestartDelay].forEach(clearFieldError);
   setModalKind(presetKind || (app && app.kind) || 'service');
+  syncHealthTarget();
   appearanceDetails.open = !!(app && (app.icon || app.glyph));
   syncGlyphGrid();
   renderIconPreview();
@@ -487,6 +536,9 @@ function rememberSavedApp(app, id, body) {
 async function saveApp() {
   const name = fName.value.trim();
   if (!name) return fieldError(fName, '请填写名称');
+  const tags = fTags.value.split(/[,，]/).map(tag => tag.trim()).filter(Boolean);
+  if (tags.length > 20) return fieldError(fTags, '标签最多 20 个');
+  if (tags.some(tag => tag.length > 40)) return fieldError(fTags, '单个标签不能超过 40 个字符');
   const isLink = modalKind === 'link';
   let command = '';
   let url = null;
@@ -504,18 +556,64 @@ async function saveApp() {
   const port = modalKind === 'service' ? readPortValue() : null;
   if (Number.isNaN(port)) return fieldError(fPort, '端口必须是 1–65535 之间的整数');
   const body = isLink
-    ? { name, url, glyph: selectedGlyph || null, kind: modalKind }
+    ? { name, url, group: fGroup.value.trim() || null, tags,
+        glyph: selectedGlyph || null, kind: modalKind }
     : {
         name,
         command,
         cwd: fCwd.value.trim() || null,
         port,
+        group: fGroup.value.trim() || null,
+        tags,
         glyph: selectedGlyph || null,
         kind: modalKind,
       };
   if (modalKind === 'service') {
+    const integerField = (input, min, max, label) => {
+      const value = Number(input.value);
+      if (!Number.isInteger(value) || value < min || value > max) {
+        fieldError(input, label + '必须是 ' + min + '–' + max + ' 之间的整数');
+        return null;
+      }
+      return value;
+    };
+    const interval = integerField(fHealthInterval, 2, 300, '检查间隔');
+    if (interval == null) return;
+    const threshold = integerField(fHealthThreshold, 1, 10, '失败阈值');
+    if (threshold == null) return;
+    const timeout = integerField(fHealthTimeout, 1, 30, '检查超时');
+    if (timeout == null) return;
+    const maxRestarts = integerField(fMaxRestarts, 0, 100, '最多重启');
+    if (maxRestarts == null) return;
+    const restartDelaySec = integerField(fRestartDelay, 1, 300, '重启延迟');
+    if (restartDelaySec == null) return;
+    const healthType = fHealthType.value;
+    let healthUrl = null, healthPort = null;
+    if (healthType === 'http') {
+      healthUrl = fHealthTarget.value.trim();
+      if (!/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(?::\d+)?(?:\/|$)/i.test(healthUrl)) {
+        return fieldError(fHealthTarget, '仅支持本机 HTTP 地址');
+      }
+    } else if (healthType === 'tcp' && fHealthTarget.value.trim()) {
+      healthPort = Number(fHealthTarget.value.trim());
+      if (!Number.isInteger(healthPort) || healthPort < 1 || healthPort > 65535) {
+        return fieldError(fHealthTarget, 'TCP 端口必须是 1–65535 之间的整数');
+      }
+    }
     body.autoStart = fAutoStart.checked;
-    body.keepAlive = fKeepAlive.checked;
+    body.dependsOn = [...fDependsOn.selectedOptions].map(option => option.value);
+    body.healthCheck = {
+      type: healthType,
+      url: healthUrl,
+      port: healthPort,
+      intervalSec: interval,
+      failureThreshold: threshold,
+      timeoutSec: timeout,
+    };
+    body.restartPolicy = fRestartPolicy.value;
+    body.maxRestarts = maxRestarts;
+    body.restartDelaySec = restartDelaySec;
+    body.keepAlive = body.restartPolicy !== 'never';
   }
   const wasCreating = !editingAppId;
   const attachRequest = wasCreating && pendingAttach && modalKind === 'service'
@@ -638,11 +736,17 @@ export function initAppModal({ onAddService, onAddTask, onAddLink }) {
   });
   btnDetectProject.addEventListener('click', detectProject);
   fCwd.addEventListener('input', () => resetDetection(true));
-  [fName, fCmd, fCwd, fPort].forEach(input =>
+  [fName, fGroup, fTags, fCmd, fCwd, fPort, fHealthTarget,
+    fHealthInterval, fHealthThreshold, fHealthTimeout,
+    fMaxRestarts, fRestartDelay].forEach(input =>
     input.addEventListener('input', () => {
       clearFieldError(input);
       refreshEditSaveMode();
     }));
+  fHealthType.addEventListener('change', syncHealthTarget);
+  fRestartPolicy.addEventListener('change', () => {
+    fKeepAlive.checked = fRestartPolicy.value !== 'never';
+  });
 
   /* 图标：上传 / 粘贴 / 清除 */
   btnPickIcon.addEventListener('click', () => iconFile.click());
@@ -685,7 +789,7 @@ export function initAppModal({ onAddService, onAddTask, onAddLink }) {
   });
   fName.addEventListener('input', renderIconPreview);
   /* 非 textarea 字段回车直接保存 */
-  [fName, fCwd, fPort, fUrl].forEach(inp =>
+  [fName, fGroup, fTags, fCwd, fPort, fUrl].forEach(inp =>
     inp.addEventListener('keydown', e => { if (e.key === 'Enter') saveApp(); }));
 }
 

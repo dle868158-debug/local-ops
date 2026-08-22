@@ -300,15 +300,22 @@ function updateAppCard(card, app) {
     ? app.health.issues : [];
   const healthIssue = app.health && app.health.blocking && healthIssues.length
     ? healthIssues[0] : null;
+  const runtimeHealth = app.runtimeHealth || {};
+  const runtimeUnhealthy = app.running && runtimeHealth.status === 'unhealthy';
   const portMismatch = hasPortMismatch(app);
   r.dot.classList.toggle('running', !!app.running);
   r.dot.classList.toggle('success', taskSucceeded);
-  r.dot.classList.toggle('danger', taskFailed);
+  r.dot.classList.toggle('danger', taskFailed || runtimeUnhealthy);
   let stTxt = isLink ? '网址'
     : (app.running ? '运行中' : (app.port ? '已停止' : '未运行'));
   let stFail = false;
   let taskHistoryText = '';
-  if (app.portConflict) {
+  if (runtimeUnhealthy) {
+    stTxt = '健康异常';
+    stFail = true;
+  } else if (app.running && runtimeHealth.status === 'checking') {
+    stTxt = '健康确认中';
+  } else if (app.portConflict) {
     stTxt = '配置冲突';
     stFail = true;
   } else if (app.portOccupied) {
@@ -427,21 +434,32 @@ function updateAppCard(card, app) {
     && (isTask ? taskStatus === 'failed' : app.lastExit.code !== 0);
   card.classList.toggle('running', !!app.running);
   card.classList.toggle('has-error', !!app.portConflict || !!app.portOccupied
-    || portMismatch || launchFailed || !!healthIssue);
+    || portMismatch || launchFailed || !!healthIssue || runtimeUnhealthy);
   r.diag.hidden = isLink || (!launchFailed && !healthIssue);
   updateCardGlow(card, app);
   r.logs.classList.toggle('attention', taskFailed);
   r.logs.title = taskFailed ? '查看失败日志' : '日志';
-  /* 自启 / 守护徽章（仅服务卡片） */
+  /* 分组 / 标签 / 运行策略徽章 */
   const badgeList = [];
+  if (app.group) badgeList.push('组 · ' + app.group);
+  for (const tag of (app.tags || []).slice(0, 3)) badgeList.push(tag);
   if (kind === 'service' && app.autoStart) badgeList.push('自启');
-  if (kind === 'service' && app.keepAlive) {
-    badgeList.push(app.keepAliveSuspended ? '守护·已挂起' : '守护');
+  const restartLabels = {
+    'always': '始终重启',
+    'on-failure': '失败重启',
+    'on-unhealthy': '异常重启',
+  };
+  if (kind === 'service' && restartLabels[app.restartPolicy]) {
+    badgeList.push((app.restartSuspended ? '已挂起 · ' : '') + restartLabels[app.restartPolicy]);
+  }
+  if (runtimeHealth.status === 'healthy') badgeList.push('健康');
+  if (Array.isArray(app.dependsOn) && app.dependsOn.length) {
+    badgeList.push('依赖 ' + app.dependsOn.length);
   }
   r.badges.replaceChildren(...badgeList.map(text => {
     const chip = el('span', 'app-badge');
     chip.textContent = text;
-    if (text === '守护·已挂起') chip.classList.add('suspended');
+    if (text.startsWith('已挂起')) chip.classList.add('suspended');
     return chip;
   }));
   r.badges.hidden = !badgeList.length;
@@ -1059,14 +1077,24 @@ export function renderLaunchpad(apps, firstRender) {
 }
 
 function syncSvcFilterUI() {
-  renderFilterChips($('#svcFilter'), SVC_FILTERS, latestSvcs, svcFilter, matchSvcFilter,
+  const filters = filtersWithGroups(SVC_FILTERS, latestSvcs);
+  if (!filters.some(([id]) => id === svcFilter)) svcFilter = 'all';
+  renderFilterChips($('#svcFilter'), filters, latestSvcs, svcFilter, matchSvcFilter,
     f => { svcFilter = f; syncSvcFilterUI(); });
   applyGridFilter(svcGrid, latestSvcs, matchSvcFilter, svcFilter);
 }
 function syncTaskFilterUI() {
-  renderFilterChips($('#taskFilter'), TASK_FILTERS, latestTasks, taskFilter, matchTaskFilter,
+  const filters = filtersWithGroups(TASK_FILTERS, latestTasks);
+  if (!filters.some(([id]) => id === taskFilter)) taskFilter = 'all';
+  renderFilterChips($('#taskFilter'), filters, latestTasks, taskFilter, matchTaskFilter,
     f => { taskFilter = f; syncTaskFilterUI(); });
   applyGridFilter(taskGrid, latestTasks, matchTaskFilter, taskFilter);
+}
+
+function filtersWithGroups(base, apps) {
+  const groups = [...new Set(apps.map(app => app.group).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b, 'zh-CN'));
+  return [...base, ...groups.map(group => ['group:' + group, group])];
 }
 
 /* ---------------- 启动台 KPI ---------------- */
@@ -1120,12 +1148,14 @@ function svcHasError(app) {
   return false;
 }
 function matchSvcFilter(app, filter) {
+  if (filter.startsWith('group:')) return app.group === filter.slice(6);
   if (filter === 'running') return !!app.running;
   if (filter === 'stopped') return !app.running;
   if (filter === 'error') return svcHasError(app);
   return true;
 }
 function matchTaskFilter(app, filter) {
+  if (filter.startsWith('group:')) return app.group === filter.slice(6);
   if (filter === 'running') return !!app.running;
   if (filter === 'all') return true;
   if (app.running || !app.lastExit) return false;

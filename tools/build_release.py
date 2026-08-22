@@ -37,6 +37,9 @@ REQUIRED_PROJECT_DOCS = (
     "ASSET_PROVENANCE.md",
     "THIRD_PARTY_NOTICES.md",
     "RELEASE_CHECKLIST.md",
+    "DOCKER.md",
+    "DOCKER_START.md",
+    "QUICK_DOCKER.md",
 )
 INCLUDE = (
     "VERSION",
@@ -44,13 +47,22 @@ INCLUDE = (
     "licenses",
     *REQUIRED_LICENSES,
     "server.py",
-    "start.command",
-    "总控台.app",
+    "console_gui.py",
+    "start.bat",
+    "build.bat",
+    "总控台.spec",
+    "Dockerfile",
+    ".dockerignore",
+    "docker-compose.yml",
+    "docker-entrypoint.py",
+    "docker-start.bat",
+    "docker-start.sh",
     "static",
     "docs",
     "tests",
     "tools",
     "requirements-dev.txt",
+    "requirements-build.txt",
     "Makefile",
 )
 EXCLUDED_PARTS = {
@@ -104,9 +116,9 @@ SENSITIVE_SUFFIXES = {
 }
 SAFE_ENV_SUFFIXES = {".example", ".sample", ".template"}
 EXECUTABLE_FILES = {
-    "start.command",
+    "start.command",  # legacy fixture/archive compatibility
+    "docker-start.sh",
     "tools/build_release.py",
-    "总控台.app/Contents/MacOS/launcher",
 }
 SEMVER_RE = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"

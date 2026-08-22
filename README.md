@@ -20,6 +20,10 @@
 - **项目自动识别**：只读分析项目根目录，为 Node.js、Python、Docker、Go、Rust、静态站点等项目推荐启动命令。
 - **配置与运行诊断**：在启动前检查工作目录、脚本、运行时和端口占用，并提供可执行的修复建议。
 - **任务状态记录**：区分成功、失败、取消和总控台中止，记录退出码、完成时间及耗时。
+- **服务编排**：应用可设置分组、标签和多级启动依赖；依赖按拓扑顺序启动，失败时回滚本次新拉起的依赖。
+- **健康检查**：支持进程、TCP 和本机 HTTP 检查，卡片实时显示健康、确认中或异常状态。
+- **可控重启**：支持从不、失败后、始终和健康异常后重启，可设置延迟与最大次数；手动停止会挂起策略。
+- **配置迁移**：设置中心可导出或合并导入便携 JSON，自动排除 PID、运行令牌、日志、退出历史和本地图标路径。
 - **日志中心**：集中查看应用日志和总控台自身日志，大文件自动轮转。
 - **技能工作台**：扫描 `~/.agents/skills`、`~/.claude/skills` 和 `~/.codex/skills`，合并去重并提供中文分类、搜索与详情。
 - **中文 Ops 界面**：支持浅色、深色和跟随系统，包含导航轨、KPI 概览、实时动态和响应式布局。
@@ -60,13 +64,13 @@
 
 ### Windows EXE 打包
 
-除上述环境外，还需要联网安装以下构建依赖：
+除上述环境外，还需要安装 `requirements-build.txt` 中锁定的构建依赖：
 
 - PyInstaller
 - PySide6
 - Pillow
 
-`build.bat` 会优先创建隔离的 `.buildenv` 虚拟环境并自动检查、安装这些依赖。它们只用于打包，不是运行 `server.py` 的必需依赖。
+`build.bat` 会优先创建隔离的 `.buildenv` 虚拟环境并按锁定版本安装。它们只用于打包，不是运行 `server.py` 的必需依赖。
 
 ### Docker 运行
 
@@ -79,10 +83,10 @@
 ### 方式一：Windows 源码运行（推荐）
 
 1. 安装 [Python 3.12 或更高版本](https://www.python.org/downloads/)，安装时建议勾选“Add Python to PATH”。
-2. 克隆 `windows-support` 分支：
+2. 克隆稳定默认分支：
 
    ```powershell
-   git clone --branch windows-support --single-branch https://github.com/dle868158-debug/local-ops.git
+   git clone https://github.com/dle868158-debug/local-ops.git
    Set-Location .\local-ops
    ```
 
@@ -170,7 +174,7 @@ docker compose down
 
 配置和日志分别保存在 `console-data`、`console-logs` 命名卷中，普通 `docker compose down` 不会删除它们。只有在确认不再需要数据时才使用 `docker compose down -v`。
 
-当前 `docker-compose.yml` 使用 `9600:9600` 发布端口，可能监听宿主机所有网络接口。仅在可信网络中使用；如只允许本机访问，请将端口映射改为：
+当前 `docker-compose.yml` 已固定使用回环端口映射：
 
 ```yaml
 ports:
@@ -223,6 +227,8 @@ docker inspect --format "{{json .State.Health}}" local-console
 | `CONSOLE_DATA_DIR` | 覆盖配置和图标目录 | `D:\LocalOps\data` |
 | `CONSOLE_LOG_DIR` | 覆盖日志目录 | `D:\LocalOps\logs` |
 
+`CONSOLE_HOST` 仅用于容器部署；原生模式拒绝 `0.0.0.0` 和 `::`。只有同时设置 `CONTAINER_ENV=1` 时才允许容器监听所有容器网卡，官方 Compose 仍只发布到宿主机 `127.0.0.1`。
+
 Windows PowerShell 示例：
 
 ```powershell
@@ -245,6 +251,24 @@ py -3 server.py
 3. 选择项目目录，让总控台只读识别候选命令，或手动填写命令。
 4. 保存后使用卡片启动、运行或打开。
 
+### 服务编排与健康检查
+
+编辑长期服务并展开“运行编排与健康检查”：
+
+1. 在“分组”和“标签”中整理不同项目或环境，启动台会自动生成分组筛选。
+2. 在“启动依赖”中选择数据库、API 等前置服务。总控台会先启动传递依赖，再启动当前服务；循环依赖和失效引用会在保存时拒绝。
+3. 选择健康检查：
+   - `进程存活`：确认受控进程仍存在。
+   - `TCP 端口`：连接 `127.0.0.1` 的指定端口；留空时使用服务端口。
+   - `HTTP 地址`：仅允许 `127.0.0.1`、`localhost` 或 `::1` 地址，避免把健康检查变成任意网络请求。
+4. 按需要选择重启策略，设置最多重启次数和重试延迟。`0` 次上限表示不限次数；达到非零上限后策略自动挂起。
+
+### 导出与导入配置
+
+在“设置中心”选择“导出配置”可下载便携 JSON。导入采用“合并”模式：相同 ID 更新，不同 ID 追加。为避免进程身份错配，导入前必须先停止全部应用。
+
+导出文件可能仍包含命令、工作目录和网址，请按敏感配置文件妥善保管。
+
 ### 任务退出状态
 
 | 退出方式 | 显示状态 |
@@ -266,12 +290,13 @@ local-ops/
 ├─ console_gui.py            # Windows PySide6 桌面壳入口
 ├─ start.bat                 # Windows 源码启动器
 ├─ build.bat                 # Windows 单文件 EXE 构建脚本
+├─ requirements-build.txt    # 锁定的 Windows 构建依赖
 ├─ 总控台.spec               # PyInstaller 构建配置
 ├─ Dockerfile                # Docker 镜像定义
 ├─ docker-compose.yml        # Compose 服务与数据卷
 ├─ static/                   # 原生前端、主题、字体、图标和品牌资源
 ├─ tests/                    # 后端、前端契约、安全和平台测试
-├─ tools/                    # 检查、资源生成和 Windows 辅助工具
+├─ tools/                    # 检查、资源生成、EXE 冒烟和 Windows 辅助工具
 ├─ docs/screenshots/         # README 界面截图
 ├─ VERSION                   # 唯一版本号来源
 └─ LICENSE                   # MIT 许可证

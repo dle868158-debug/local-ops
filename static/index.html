@@ -541,6 +541,16 @@
       <label for="fName">名称 <span class="req">*</span></label>
       <input id="fName" placeholder="如：我的博客" autocomplete="off" required aria-required="true">
     </div>
+    <div class="field-grid-two">
+      <div class="field">
+        <label for="fGroup">分组</label>
+        <input id="fGroup" placeholder="如：开发环境" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="fTags">标签</label>
+        <input id="fTags" placeholder="如：Python, API" autocomplete="off">
+      </div>
+    </div>
     <div class="field" id="urlField">
       <label for="fUrl">网址 <span class="req">*</span></label>
       <input id="fUrl" type="url" placeholder="如：http://127.0.0.1:3080/" autocomplete="off" inputmode="url">
@@ -577,10 +587,75 @@
     <div class="field" id="autoField">
       <div class="auto-checks">
         <label><input type="checkbox" id="fAutoStart"> 随总控台启动</label>
-        <label><input type="checkbox" id="fKeepAlive"> 异常自动重启（守护）</label>
       </div>
-      <p class="hint">守护模式下：手动「停止」会挂起守护；「启动 / 重启」后自动恢复。</p>
+      <input type="checkbox" id="fKeepAlive" hidden aria-hidden="true">
     </div>
+    <details class="appearance-details runtime-details" id="runtimeDetails">
+      <summary>
+        <span class="appearance-summary-main">
+          <span class="appearance-summary-title">运行编排与健康检查</span>
+          <span class="appearance-optional">服务可选</span>
+        </span>
+        <span class="appearance-disclosure">
+          <span class="appearance-disclosure-closed">展开设置</span>
+          <span class="appearance-disclosure-open">收起设置</span>
+        </span>
+      </summary>
+      <div class="field">
+        <label for="fDependsOn">启动依赖</label>
+        <select id="fDependsOn" multiple size="4" aria-describedby="dependsHint"></select>
+        <p class="hint" id="dependsHint">可多选。启动本服务前会按依赖顺序拉起并等待健康。</p>
+      </div>
+      <div class="field-grid-two">
+        <div class="field">
+          <label for="fHealthType">健康检查</label>
+          <select id="fHealthType">
+            <option value="none">不检查</option>
+            <option value="process">进程存活</option>
+            <option value="tcp">TCP 端口</option>
+            <option value="http">HTTP 地址</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="fHealthTarget">检查目标</label>
+          <input id="fHealthTarget" placeholder="端口或 http://127.0.0.1:…">
+        </div>
+      </div>
+      <div class="field-grid-three">
+        <div class="field">
+          <label for="fHealthInterval">间隔（秒）</label>
+          <input id="fHealthInterval" type="number" min="2" max="300" value="10">
+        </div>
+        <div class="field">
+          <label for="fHealthThreshold">失败阈值</label>
+          <input id="fHealthThreshold" type="number" min="1" max="10" value="3">
+        </div>
+        <div class="field">
+          <label for="fHealthTimeout">超时（秒）</label>
+          <input id="fHealthTimeout" type="number" min="1" max="30" value="2">
+        </div>
+      </div>
+      <div class="field-grid-three">
+        <div class="field">
+          <label for="fRestartPolicy">重启策略</label>
+          <select id="fRestartPolicy">
+            <option value="never">从不</option>
+            <option value="on-failure">失败后</option>
+            <option value="always">始终</option>
+            <option value="on-unhealthy">健康异常后</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="fMaxRestarts">最多重启</label>
+          <input id="fMaxRestarts" type="number" min="0" max="100" value="3">
+        </div>
+        <div class="field">
+          <label for="fRestartDelay">延迟（秒）</label>
+          <input id="fRestartDelay" type="number" min="1" max="300" value="3">
+        </div>
+      </div>
+      <p class="hint">最多重启填 0 表示不限次数。手动停止会挂起自动重启，再次启动后恢复。</p>
+    </details>
     <details class="appearance-details" id="appearanceDetails">
       <summary>
         <span class="appearance-summary-main">
@@ -719,6 +794,17 @@
         <button class="mini-tab" type="button" data-appearance="auto">自动</button>
         <button class="mini-tab" type="button" data-appearance="light">浅色</button>
         <button class="mini-tab" type="button" data-appearance="dark">深色</button>
+      </div>
+    </div>
+    <div class="set-row set-row-stack">
+      <div class="set-copy">
+        <div class="set-name">配置备份与迁移</div>
+        <div class="set-hint">导出文件不包含 PID、运行令牌、日志和本地图标路径。导入前需停止全部应用。</div>
+      </div>
+      <div class="set-actions">
+        <button class="btn" id="setExportConfig" type="button">导出配置</button>
+        <button class="btn" id="setImportConfig" type="button">导入并合并</button>
+        <input type="file" id="setImportFile" accept="application/json,.json" hidden>
       </div>
     </div>
     <div class="set-info-list">

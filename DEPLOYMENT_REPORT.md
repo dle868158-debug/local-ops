@@ -45,12 +45,12 @@ chmod +x docker-start.sh
 
 ### 方式 3️⃣：Docker Compose（推荐）
 ```bash
-docker-compose up -d
+docker compose up -d --build
 ```
 
 ### 方式 4️⃣：直接 Docker
 ```bash
-docker run -d -p 9600:9600 local-console:latest
+docker run -d -p 127.0.0.1:9600:9600 local-console:latest
 ```
 
 ## 📌 访问地址
@@ -99,7 +99,7 @@ console-logs  → /app/logs     (日志文件)
 
 ✨ **已实现的功能**：
 - ✅ 完整 Python 3.12 运行环境
-- ✅ 自动绑定 0.0.0.0（Docker 容器友好）
+- ✅ 容器内绑定 0.0.0.0，宿主机仅发布到 127.0.0.1
 - ✅ 应用配置自动迁移到 `/app/data`
 - ✅ 日志自动重定向到 `/app/logs`
 - ✅ 集成健康检查（每 10 秒）
@@ -121,10 +121,10 @@ console-logs  → /app/logs     (日志文件)
 
 ```bash
 # 启动服务
-docker-compose up -d
+docker compose up -d --build
 
 # 停止服务
-docker-compose down
+docker compose down
 
 # 查看日志
 docker logs -f local-console
@@ -203,7 +203,7 @@ docker run \
 
 ## 📞 后续步骤
 
-1. ✅ 启动容器：`docker-compose up -d`
+1. ✅ 启动容器：`docker compose up -d --build`
 2. ✅ 访问应用：http://localhost:9600
 3. ✅ 查看日志：`docker logs -f local-console`
 4. ✅ 查看详情：DOCKER_START.md

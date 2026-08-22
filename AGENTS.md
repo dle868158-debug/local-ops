@@ -51,11 +51,13 @@
   }],
   "watchedKeywords": ["ffmpeg"],
   "consolePort": 9600, "consolePid": 123, "consoleCwd": "/path/to/总控台",
-  "version": "1.0.0", "schemaVersion": 1,
+  "version": "1.0.0", "schemaVersion": 2,
   "degraded": false, "degradedReasons": []
 }
 ```
 - `GET /api/health` — 不运行 `ps/lsof` 的轻量健康检查，返回 `status/version/schemaVersion/degraded/issues/config`
+- `GET /api/config/export` — 导出便携配置；排除运行身份、日志、退出历史和本地图标路径
+- `POST /api/config/import` `{mode:"merge"|"replace", config}` — 全量校验后导入；有应用运行时拒绝
 - `group`: `"mine"` | `"background"`；`icon`/`emoji`/`port`/`cwd`/`project`/`appId`/`appName`/`lastExit` 可为 `null`
 - `lastExit`：最近一次退出结果。任务状态为 `succeeded`（exit 0）/`canceled`（脚本主动 exit 130）/`failed`（其他自然退出）/`stopped`（总控台中止，code=null）；旧数据可能只有 `code/at`，API 输出时会兼容推导但不改写磁盘。批处理启动时保留上一次完成历史，自然退出或中止后覆盖
 - `health`：每次状态读取时只读检查配置，返回 `status: ok|error|unknown`、`blocking` 与 `issues[{kind,severity,title,detail,fix,action}]`。明确缺失的 cwd、脚本或运行时会阻止启动；复杂 Shell 命令无法静态判断时为 unknown，不阻止运行
@@ -104,14 +106,14 @@
 - `POST /api/watch` `{keyword, action: "add"|"remove"}` → `{ok, keywords}`
 
 ### 启动台应用
-- `POST /api/apps` `{name, command, cwd?, port?, emoji?, glyph?, kind?, url?, autoStart?, keepAlive?, attachPid?}` → app 对象（`kind` 缺省 `service`；`task` 与 `link` 强制 port=null；`link` 必须提供 `url`（http/https），command 可为空；`autoStart` 随总控台启动、`keepAlive` 异常自动重启（守护）仅对 `service` 生效；服务监控来源可带 `attachPid`，后端先校验 PID/端口/UID/cwd，再将卡片与运行身份一次写入，失败不创建半成品卡片）
+- `POST /api/apps` `{name, command, cwd?, port?, group?, tags?, dependsOn?, healthCheck?, restartPolicy?, maxRestarts?, restartDelaySec?, kind?, url?, autoStart?, attachPid?}` → app 对象（依赖仅允许指向长期服务且必须无环；HTTP 健康检查仅允许本机地址；`restartPolicy` 为 `never|on-failure|always|on-unhealthy`）
 - `POST /api/pick` `{what: "dir"|"script"}` → `{ok, path}` / `{ok, canceled:true}`（osascript 弹 macOS 原生目录/文件选择框；取消不是错误）
 - `POST /api/project/detect` `{cwd}` → `{ok, cwd, name, files, candidates:[{command,label,source,port,kind,detail}]}`（只读分析项目根目录，不执行项目代码；识别 package.json scripts 与包管理器锁文件、Hexo/Hugo/Jekyll、Django/FastAPI/Flask/Streamlit、Docker Compose、Go、Rust、常用启动脚本及纯静态站点。Hexo 无 scripts 时仍返回 `hexo s` 服务与 `hexo cl` 任务）
 - `POST /api/apps/reorder` `{ids: [...]}` → `{ok}`（按 ids 重排 apps 数组；Python sort 稳定，未涉及的 id 相对顺序不变，服务/任务/网址三区可独立拖拽排序互不干扰）
 - `PUT /api/apps/{id}`（部分更新同字段，可带 `stopBeforeUpdate:true`）→ app 对象；运行中修改 command/cwd/port/kind 时，缺少该标记返回 `{ok:false, requiresStop:true}`，带标记则安全停止后原子保存
 - `DELETE /api/apps/{id}` → `{ok}`（先停止再删，连同图标/日志）
-- `POST /api/apps/{id}/start` → `{ok, pid}` / `{ok:false, error, health?}`（已运行则报错；启动前复查配置健康，明确失效返回 422；批处理启动后立即返回，由退出监视线程记录结果，快速成功任务不会被误判成启动失败）
-- `POST /api/apps/{id}/stop` → `{ok}` / `{ok:false, error}`（keepAlive 卡片的手动停止会写 `keepAliveSuspended` 挂起守护，再次启动/重启后恢复）
+- `POST /api/apps/{id}/start` → `{ok, pid, dependenciesStarted}` / `{ok:false, error, health?}`（先按拓扑顺序启动并等待依赖健康；依赖失败时回滚本次新启动的依赖）
+- `POST /api/apps/{id}/stop` → `{ok}` / `{ok:false, error}`（手动停止会挂起自动重启，再次启动/重启后恢复）
 - `POST /api/apps/{id}/restart` → `{ok, pid}` / `{ok:false, error}`（仅重启 token 校验通过的受管进程；等待旧进程退出后再启动，不自动 SIGKILL）
 - `POST /api/apps/{id}/open` → `{ok, url}` / `{ok:false, error}`（网址卡片专用：用系统默认浏览器打开配置的 `url`；Windows 走 `os.startfile`，macOS 走 `webbrowser.open`；非 link 卡片拒绝。`start/stop/restart` 对 link 卡片拒绝）
 - `POST /api/apps/{id}/shortcut` → `{ok, path}` / `{ok:false, error}`（在桌面创建快捷方式：双击 = `总控台.exe --open-app <id>` 启动总控台并拉起/打开该卡片；仅 Windows 打包版，通过 WScript.Shell COM 写 .lnk）
@@ -144,6 +146,8 @@
 - **应用启停**：多张卡片可保存相同端口（例如多个默认使用 3000 的项目）；启动前只拒绝失效配置和当时真实被占用的端口。重启先做健康预检，失败时不会先停掉仍工作的旧服务。停止时先校验 token，然后只对该受控进程组发 `SIGTERM`，**绝不按端口杀其他监听者**。服务手动 stop 不记录退出历史；任务自然结束记录四态结果，总控台中止记录 `stopped`。批处理不做“长期服务存活探测”，避免把快速成功误判成失败
 - **任务取消协议**：一次性任务内部的“用户主动取消”以退出码 **130** 通知总控台；0 表示成功，其余表示失败。不要通过日志文字猜测状态
 - **配置健康**：`inspect_app_health` 只解析确定无歧义的简单命令并执行 stat/权限/PATH 检查，不执行命令、不展开变量/通配符。相对脚本按配置 cwd（空值时用户主目录）解析；复杂或动态命令返回 unknown
+- **依赖与运行时健康**：保存时校验依赖存在、类型和环；启动时拓扑排序。运行时健康检查支持 process/tcp/loopback-http，连续失败达到阈值后才标记 unhealthy。
+- **重启策略**：`never/on-failure/always/on-unhealthy` 共用延迟和最大次数；达到非零上限后写入 `restartSuspended`，手动启动解除挂起。
 - **运行中编辑**：编辑面板打开时立即显示“停止服务”。点击只调用 stop，面板保持打开且当前草稿不变；停止成功后用户继续编辑并普通保存。名称/图标仍可在运行中直接保存。`stopBeforeUpdate:true` 保留为 API 客户端的原子停止更新能力，但不是默认前端流程。
 - **无终端 PATH**：Finder/`LSUIElement` 启动不会读取 shell 配置；子应用启动环境需显式补入 `~/.local/bin`、Volta/Bun/pnpm、NVM/fnm、Homebrew 与系统 bin 目录，保证 `node`/`npm`/`pnpm` 等可用。启动 API 短暂探测立即退出，并把日志末行作为明确错误返回。
 - **日志**：单文件超过 10MB 时 copy-truncate，保留 3 份轮转备份；日志 API 从文件尾部分块读取，不将整个日志读入内存。
@@ -156,8 +160,8 @@
 ## 配置 schema
 ```json
 {
-  "schemaVersion": 1,
-  "apps": [{"id": "8位hex", "name": "", "command": "", "cwd": null, "port": null, "emoji": null, "icon": null, "favicon": null, "kind": "service", "url": null, "autoStart": false, "keepAlive": false, "keepAliveSuspended": false, "lastPid": null, "lastPgid": null, "runToken": null, "attached": false, "lastExit": null, "createdAt": 0}],
+  "schemaVersion": 2,
+  "apps": [{"id": "8位hex", "name": "", "command": "", "cwd": null, "port": null, "group": null, "tags": [], "dependsOn": [], "healthCheck": {"type": "none", "url": null, "port": null, "timeoutSec": 2, "intervalSec": 10, "failureThreshold": 3}, "restartPolicy": "never", "maxRestarts": 3, "restartDelaySec": 3, "restartSuspended": false, "kind": "service", "url": null, "autoStart": false, "lastPid": null, "lastPgid": null, "runToken": null, "attached": false, "lastExit": null, "createdAt": 0}],
   "hidden": ["name:port"], "pinned": ["name:port"], "promoted": ["name:port"],
   "watchedKeywords": [],
   "uiTheme": "ops"
@@ -169,6 +173,7 @@
 - 中文 UI，单页三视图（侧边导航：启动台 / 服务监控 / 技能工作台），每 2s 轮询 `/api/state`
 - 技能工作台视图：懒加载 `/api/skills`（仅视图激活时拉取并缓存），打开后默认按 12 个中文分类直接展示全部技能；概览统计（总数/分类/中文覆盖/技能库）、分类与技能库双筛选、中文搜索（名称/中文/英文/触发词）、分类卡片网格（中文简介 + 来源徽标 + 版本）与详情抽屉（中文详解、触发方式、元信息、原始英文描述、关联技能跳转）；每张卡片提供「调用技能」，打开调用面板并复制可直接发送给 AI 的调用语句；「刷新技能」只局部刷新技能数据，带超时与错误隔离，不影响 `/api/state` 主轮询；中文缺失时卡片显示「暂无中文」并回退原文
 - 添加服务时选择工作区文件夹后自动调用项目识别并展示候选命令；用户点选候选后再填入命令/端口。原有“选择脚本”与手动填写入口必须保留
+- 服务编辑支持分组、标签、依赖、健康检查与重启策略；启动台提供动态分组筛选和对应状态徽章；设置中心提供配置导出与合并导入
 - 编辑运行中服务时，表单内立即显示“停止服务”；停止操作不得关闭编辑面板或清除已经填写的内容，停止后恢复普通“保存”
 - 批处理运行中显示实时耗时和「中止」入口；结束后明确显示成功/取消/失败/中止、距今时间与耗时。失败时突出日志入口；首次加载已有历史不重复提醒
 - 停止状态下配置健康有阻断问题时，卡片显示第一项原因、禁用运行/启动并开放「配置与运行诊断」；运行中的停止/中止入口不得被健康问题禁用

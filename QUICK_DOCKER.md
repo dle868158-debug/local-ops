@@ -16,8 +16,8 @@ chmod +x docker-start.sh && ./docker-start.sh
 
 | 操作 | 命令 |
 |------|------|
-| 启动 | `docker-compose up -d` |
-| 停止 | `docker-compose down` |
+| 启动 | `docker compose up -d --build` |
+| 停止 | `docker compose down` |
 | 查看日志 | `docker logs -f local-console` |
 | 进入容器 | `docker exec -it local-console bash` |
 | 重启 | `docker restart local-console` |
@@ -47,7 +47,7 @@ ports:
 
 然后重启：
 ```bash
-docker-compose up -d
+docker compose up -d --build
 ```
 
 ## 🛠️ 文件说明
@@ -104,7 +104,7 @@ docker build -t local-console:v1.0 .
 # 启动生产容器
 docker run -d \
   --name local-console-prod \
-  -p 9600:9600 \
+  -p 127.0.0.1:9600:9600 \
   -v console-prod-data:/app/data \
   -v console-prod-logs:/app/logs \
   --restart always \

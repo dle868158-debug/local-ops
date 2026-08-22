@@ -11,6 +11,7 @@ API 契约与实现要点见 AGENTS.md。
 
 import glob
 import functools
+import ipaddress
 import io
 import errno
 import json
@@ -204,7 +205,7 @@ THEMES_DIR = os.path.join(STATIC_DIR, "themes")
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 INSTANCE_LOCK_PATH = os.path.join(DATA_DIR, "console.lock")
 
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
 # 默认 UI 主题：新安装与无偏好回退均使用它，主题清单中固定排首位。
 DEFAULT_UI_THEME = "ops"
@@ -226,7 +227,25 @@ def read_project_version(path=VERSION_PATH):
 
 APP_VERSION, VERSION_LOAD_ERROR = read_project_version()
 
-HOST = "127.0.0.1"
+def resolve_console_host():
+    """Return the configured bind host without weakening native safety.
+
+    Native launches always stay on loopback.  Containers may explicitly bind
+    all interfaces *inside the container* so the host can publish the port on
+    127.0.0.1.  Keeping this policy in the server avoids Docker images that
+    rewrite source code at startup.
+    """
+    raw = (os.environ.get("CONSOLE_HOST") or "127.0.0.1").strip().lower()
+    loopback = {"127.0.0.1", "localhost", "::1"}
+    if raw in loopback:
+        return raw
+    if raw in {"0.0.0.0", "::"} and os.environ.get("CONTAINER_ENV") == "1":
+        return raw
+    raise RuntimeError(
+        "CONSOLE_HOST 仅允许回环地址；容器内可在 CONTAINER_ENV=1 时使用 0.0.0.0/::")
+
+
+HOST = resolve_console_host()
 PORT_START = 9600
 PORT_TRIES = 10
 SUBPROCESS_TIMEOUT = 5          # lsof/ps 等子进程超时（秒）
@@ -488,7 +507,29 @@ def migrate_config_v0_to_v1(raw):
     return migrated
 
 
-CONFIG_MIGRATIONS = {0: migrate_config_v0_to_v1}
+def migrate_config_v1_to_v2(raw):
+    """v2 adds portable organization, dependency and recovery settings."""
+    migrated = json.loads(json.dumps(raw, ensure_ascii=False))
+    for app in migrated.get("apps") or []:
+        if not isinstance(app, dict):
+            continue
+        app.setdefault("group", None)
+        app.setdefault("tags", [])
+        app.setdefault("dependsOn", [])
+        app.setdefault("healthCheck", {
+            "type": "none", "url": None, "port": None,
+            "timeoutSec": 2, "intervalSec": 10, "failureThreshold": 3,
+        })
+        app.setdefault(
+            "restartPolicy", "always" if app.get("keepAlive") else "never")
+        app.setdefault("maxRestarts", 3)
+        app.setdefault("restartDelaySec", 3)
+        app.setdefault("restartSuspended", bool(app.get("keepAliveSuspended")))
+    migrated["schemaVersion"] = 2
+    return migrated
+
+
+CONFIG_MIGRATIONS = {0: migrate_config_v0_to_v1, 1: migrate_config_v1_to_v2}
 
 
 def migrate_config(raw):
@@ -525,6 +566,14 @@ class Config:
     APP_DEFAULT = {"id": None, "name": "", "command": "", "cwd": None,
                    "port": None, "emoji": None, "glyph": None, "icon": None,
                    "favicon": None, "kind": "service", "url": None,
+                   "group": None, "tags": [], "dependsOn": [],
+                   "healthCheck": {
+                       "type": "none", "url": None, "port": None,
+                       "timeoutSec": 2, "intervalSec": 10,
+                       "failureThreshold": 3,
+                   },
+                   "restartPolicy": "never", "maxRestarts": 3,
+                   "restartDelaySec": 3, "restartSuspended": False,
                    "autoStart": False, "keepAlive": False,
                    "keepAliveSuspended": False,
                    "lastPid": None,
@@ -563,7 +612,46 @@ class Config:
             app = dict(cls.APP_DEFAULT)
             for key in app:
                 if key in item:
-                    app[key] = item[key]
+                    app[key] = json.loads(json.dumps(
+                        item[key], ensure_ascii=False))
+            app["group"] = (
+                app["group"].strip()[:80]
+                if isinstance(app.get("group"), str) and app["group"].strip()
+                else None)
+            app["tags"] = list(dict.fromkeys(
+                tag.strip()[:40] for tag in (app.get("tags") or [])
+                if isinstance(tag, str) and tag.strip()))[:20]
+            app["dependsOn"] = list(dict.fromkeys(
+                dep for dep in (app.get("dependsOn") or [])
+                if isinstance(dep, str) and dep and dep != app.get("id")))[:32]
+            health = app.get("healthCheck")
+            if not isinstance(health, dict):
+                health = {}
+            app["healthCheck"] = {
+                "type": health.get("type")
+                if health.get("type") in ("none", "process", "tcp", "http")
+                else "none",
+                "url": health.get("url") if isinstance(health.get("url"), str) else None,
+                "port": health.get("port") if isinstance(health.get("port"), int) else None,
+                "timeoutSec": health.get("timeoutSec")
+                if isinstance(health.get("timeoutSec"), int) else 2,
+                "intervalSec": health.get("intervalSec")
+                if isinstance(health.get("intervalSec"), int) else 10,
+                "failureThreshold": health.get("failureThreshold")
+                if isinstance(health.get("failureThreshold"), int) else 3,
+            }
+            if app.get("restartPolicy") not in (
+                    "never", "on-failure", "always", "on-unhealthy"):
+                app["restartPolicy"] = "always" if app.get("keepAlive") else "never"
+            app["maxRestarts"] = (
+                app["maxRestarts"] if isinstance(app.get("maxRestarts"), int) else 3)
+            app["restartDelaySec"] = (
+                app["restartDelaySec"]
+                if isinstance(app.get("restartDelaySec"), int) else 3)
+            app["restartSuspended"] = bool(app.get("restartSuspended"))
+            # Keep old frontends/config consumers working while restartPolicy is canonical.
+            app["keepAlive"] = app["restartPolicy"] != "never"
+            app["keepAliveSuspended"] = app["restartSuspended"]
             apps.append(app)
         data["apps"] = apps
         return data
@@ -1913,6 +2001,7 @@ def build_apps(cfg, listeners, groups=None):
         except Exception as exc:
             LOG.warning("检查应用配置失败（%s）：%s", app.get("id"), exc)
             health = {"status": "unknown", "blocking": False, "issues": []}
+        runtime_health = app_runtime_health(app, bool(live))
         apps.append({
             "id": app["id"], "name": app["name"], "command": app["command"],
             "cwd": app.get("cwd"), "port": port,
@@ -1923,12 +2012,21 @@ def build_apps(cfg, listeners, groups=None):
                           if pid else None),
             "kind": app.get("kind") or "service",
             "url": app.get("url"),
+            "group": app.get("group"),
+            "tags": list(app.get("tags") or []),
+            "dependsOn": list(app.get("dependsOn") or []),
+            "healthCheck": dict(app.get("healthCheck") or {}),
+            "restartPolicy": app.get("restartPolicy") or "never",
+            "maxRestarts": app.get("maxRestarts", 3),
+            "restartDelaySec": app.get("restartDelaySec", 3),
+            "restartSuspended": bool(app.get("restartSuspended")),
             "autoStart": bool(app.get("autoStart")),
             "keepAlive": bool(app.get("keepAlive")),
             "keepAliveSuspended": bool(app.get("keepAliveSuspended")),
             "attached": bool(app.get("attached")),
             "lastExit": public_last_exit(app),
             "health": health,
+            "runtimeHealth": runtime_health,
             "ports": actual_ports,
             "openHosts": open_hosts,
             "listening": listening,
@@ -2690,6 +2788,7 @@ def persist_started_app(cfg, app_id, proc, pgid, token):
             target["lastPgid"] = pgid
             target["runToken"] = token
             target["attached"] = False
+            target["restartSuspended"] = False
             target["keepAliveSuspended"] = False  # 显式/守护启动即解除挂起
             # 批处理任务运行时先保留上一次结果；自然退出或手动停止后再原子覆盖。
             if (target.get("kind") or "service") != "task":
@@ -2700,6 +2799,132 @@ def persist_started_app(cfg, app_id, proc, pgid, token):
     if saved:
         watch_app_exit(cfg, app_id, proc, token, started_at)
     return saved
+
+
+def wait_for_app_ready(app, proc, timeout=None):
+    """Wait briefly for startup and, when configured, for a positive health probe."""
+    health_config = app.get("healthCheck") or {}
+    health_type = health_config.get("type") or "none"
+    if timeout is None:
+        timeout = STARTUP_PROBE_SEC if health_type in ("none", "process") else max(
+            5.0, min(30.0, float(health_config.get("timeoutSec") or 2) * 4))
+    deadline = time.monotonic() + timeout
+    while True:
+        code = proc.poll()
+        if code is not None:
+            return False, startup_failure_message(app["id"], code)
+        if health_type == "none":
+            if time.monotonic() >= deadline:
+                return True, None
+        else:
+            runtime = app_runtime_health(app, running=True, force=True)
+            if runtime["status"] == "healthy":
+                return True, None
+            if runtime["status"] == "unhealthy":
+                return False, runtime.get("detail") or "健康检查失败"
+            if time.monotonic() >= deadline:
+                return False, runtime.get("detail") or "健康检查超时"
+        time.sleep(0.1)
+
+
+def start_managed_app(server, app, wait_ready=True):
+    """Start one already-validated app and persist its managed identity."""
+    if app_alive_sign(app):
+        return True, None, app.get("lastPid"), False
+    health = inspect_app_health(app)
+    if health["blocking"]:
+        issue = health["issues"][0]
+        return False, "%s：%s" % (issue["title"], issue["detail"]), None, False
+    if _keepalive_port_blocked(app, set(managed_pids(app))):
+        return False, "端口 %d 已被其他进程占用" % app.get("port"), None, False
+    ok, error, proc, pgid, token = start_app(app)
+    if not ok:
+        return False, error, None, False
+    if not persist_started_app(server.cfg, app["id"], proc, pgid, token):
+        stop_pid_tree(pgid)
+        return False, "应用已被删除，已取消启动", None, False
+    if wait_ready:
+        ready, error = wait_for_app_ready(app, proc)
+        if not ready:
+            latest = find_app(server.cfg.snapshot(), app["id"])
+            if latest and app_alive_sign(latest):
+                stop_app_and_clear(server.cfg, latest)
+            return False, error, proc.pid, True
+    return True, None, proc.pid, True
+
+
+def dependency_start_order(snapshot, app_id):
+    """Return transitive dependencies in topological order (target excluded)."""
+    by_id = {app.get("id"): app for app in snapshot.get("apps") or []}
+    order = []
+    visited = set()
+
+    def visit(current_id):
+        current = by_id.get(current_id)
+        if not current:
+            raise ValueError("依赖应用 %s 不存在" % current_id)
+        for dep_id in current.get("dependsOn") or []:
+            if dep_id in visited:
+                continue
+            visit(dep_id)
+            visited.add(dep_id)
+            order.append(dep_id)
+
+    visit(app_id)
+    return [by_id[dep_id] for dep_id in order]
+
+
+def ensure_dependencies_running(server, app_id):
+    """Start dependencies in order; roll back only dependencies started by this call."""
+    try:
+        ordered = dependency_start_order(server.cfg.snapshot(), app_id)
+    except ValueError as exc:
+        return False, str(exc), []
+    started = []
+    for dependency in ordered:
+        dep_id = dependency["id"]
+        current = find_app(server.cfg.snapshot(), dep_id)
+        if current and app_alive_sign(current):
+            runtime = app_runtime_health(current, running=True, force=True)
+            if runtime["status"] == "unhealthy":
+                error = "依赖“%s”运行但健康检查失败：%s" % (
+                    current.get("name") or dep_id, runtime.get("detail") or "未知原因")
+                break
+            continue
+        lock = server.try_app_operation(dep_id)
+        if lock is None:
+            error = "依赖“%s”正在执行其他操作" % (dependency.get("name") or dep_id)
+            break
+        try:
+            current = find_app(server.cfg.snapshot(), dep_id)
+            if not current:
+                error = "依赖应用 %s 不存在" % dep_id
+                break
+            if app_alive_sign(current):
+                continue
+            ok, detail, _, newly_started = start_managed_app(server, current)
+            if not ok:
+                error = "依赖“%s”启动失败：%s" % (
+                    current.get("name") or dep_id, detail or "未知原因")
+                break
+            if newly_started:
+                started.append(dep_id)
+        finally:
+            lock.release()
+    else:
+        return True, None, started
+
+    for dep_id in reversed(started):
+        lock = server.try_app_operation(dep_id)
+        if lock is None:
+            continue
+        try:
+            current = find_app(server.cfg.snapshot(), dep_id)
+            if current and app_alive_sign(current):
+                stop_app_and_clear(server.cfg, current)
+        finally:
+            lock.release()
+    return False, error, []
 
 
 def clear_app_runtime(cfg, app_id, expected_token=None, last_exit=None):
@@ -3643,6 +3868,33 @@ class LoopbackRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+class LoopbackHealthRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Health probes may redirect only within the original loopback origin."""
+
+    def __init__(self, original_url):
+        super().__init__()
+        parsed = urllib.parse.urlsplit(original_url)
+        self.scheme = parsed.scheme
+        self.port = parsed.port or (443 if parsed.scheme == "https" else 80)
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        try:
+            parsed = urllib.parse.urlsplit(newurl)
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            allowed = (
+                parsed.scheme == self.scheme
+                and (parsed.hostname or "").lower() in (
+                    "127.0.0.1", "localhost", "::1")
+                and port == self.port
+                and not parsed.username and not parsed.password
+            )
+        except (TypeError, ValueError, UnicodeError):
+            allowed = False
+        if not allowed:
+            return None
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def http_get(url, port, timeout=3, limit=262144):
     """GET → (bytes, content-type) | (None, None)。仅抓同一 loopback 端口。"""
     if not is_loopback_service_url(url, port):
@@ -3734,6 +3986,52 @@ def find_app(cfg, app_id):
     for app in cfg.get("apps") or []:
         if app.get("id") == app_id:
             return app
+    return None
+
+
+def validate_dependency_graph(apps):
+    """Return a user-facing error for missing/non-service/cyclic dependencies."""
+    by_id = {
+        app.get("id"): app for app in apps
+        if isinstance(app, dict) and isinstance(app.get("id"), str)
+    }
+    graph = {}
+    for app_id, app in by_id.items():
+        deps = app.get("dependsOn") or []
+        if not isinstance(deps, list):
+            return "应用 %s 的 dependsOn 必须是数组" % (app.get("name") or app_id)
+        graph[app_id] = []
+        for dep_id in deps:
+            dep = by_id.get(dep_id)
+            if dep is None:
+                return "应用 %s 依赖了不存在的应用 %s" % (
+                    app.get("name") or app_id, dep_id)
+            if (dep.get("kind") or "service") != "service":
+                return "依赖项 %s 必须是长期服务" % (dep.get("name") or dep_id)
+            graph[app_id].append(dep_id)
+
+    visiting, visited = set(), set()
+
+    def visit(node, chain):
+        if node in visiting:
+            start = chain.index(node) if node in chain else 0
+            names = [by_id[item].get("name") or item for item in chain[start:] + [node]]
+            return "检测到循环依赖：" + " → ".join(names)
+        if node in visited:
+            return None
+        visiting.add(node)
+        for dep in graph.get(node, []):
+            error = visit(dep, chain + [node])
+            if error:
+                return error
+        visiting.remove(node)
+        visited.add(node)
+        return None
+
+    for app_id in graph:
+        error = visit(app_id, [])
+        if error:
+            return error
     return None
 
 
@@ -3878,6 +4176,79 @@ def validate_port(value):
     return port, None
 
 
+def validate_string_list(value, field, max_items=20, max_length=80):
+    if not isinstance(value, list):
+        return None, "%s 必须是字符串数组" % field
+    normalized = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            return None, "%s 只能包含非空字符串" % field
+        item = item.strip()
+        if len(item) > max_length:
+            return None, "%s 单项不能超过 %d 个字符" % (field, max_length)
+        if item not in normalized:
+            normalized.append(item)
+        if len(normalized) > max_items:
+            return None, "%s 最多包含 %d 项" % (field, max_items)
+    return normalized, None
+
+
+def validate_bounded_int(value, field, minimum, maximum):
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None, "%s 必须是整数" % field
+    if not minimum <= value <= maximum:
+        return None, "%s 必须在 %d-%d 之间" % (field, minimum, maximum)
+    return value, None
+
+
+def validate_health_check(value):
+    if not isinstance(value, dict):
+        return None, "healthCheck 必须是对象"
+    kind = value.get("type", "none")
+    if kind not in ("none", "process", "tcp", "http"):
+        return None, "healthCheck.type 必须是 none/process/tcp/http"
+    timeout, err = validate_bounded_int(
+        value.get("timeoutSec", 2), "healthCheck.timeoutSec", 1, 30)
+    if err:
+        return None, err
+    interval, err = validate_bounded_int(
+        value.get("intervalSec", 10), "healthCheck.intervalSec", 2, 300)
+    if err:
+        return None, err
+    threshold, err = validate_bounded_int(
+        value.get("failureThreshold", 3),
+        "healthCheck.failureThreshold", 1, 10)
+    if err:
+        return None, err
+    port, err = validate_port(value.get("port"))
+    if err:
+        return None, "healthCheck.%s" % err
+    url = value.get("url")
+    if url is not None:
+        if not isinstance(url, str) or len(url.strip()) > 2000:
+            return None, "healthCheck.url 必须是合法的本地 http(s) 地址"
+        url = url.strip() or None
+    if kind == "http":
+        try:
+            parsed = urllib.parse.urlsplit(url or "")
+            hostname = (parsed.hostname or "").lower()
+        except ValueError:
+            parsed, hostname = None, ""
+        if (not parsed or parsed.scheme not in ("http", "https")
+                or hostname not in ("127.0.0.1", "localhost", "::1")):
+            return None, "HTTP 健康检查仅允许本机 http(s) 地址"
+    if kind == "tcp" and port is None:
+        # 空值表示继承应用配置端口，最终在保存后统一校验。
+        port = None
+    if kind in ("none", "process"):
+        url, port = None, None
+    return {
+        "type": kind, "url": url, "port": port,
+        "timeoutSec": timeout, "intervalSec": interval,
+        "failureThreshold": threshold,
+    }, None
+
+
 def validate_app_fields(data, partial):
     """校验/规范化应用字段。partial=True 时仅校验出现的字段。
     返回 (fields, error)：fields 为规范化后的字段子集。"""
@@ -3936,11 +4307,65 @@ def validate_app_fields(data, partial):
         fields["glyph"] = (v or None)
     elif not partial:
         fields["glyph"] = None
+    if "group" in data:
+        value = data["group"]
+        if value is not None and not isinstance(value, str):
+            return None, "group 必须是字符串或 null"
+        value = value.strip() if isinstance(value, str) else ""
+        if len(value) > 80:
+            return None, "group 不能超过 80 个字符"
+        fields["group"] = value or None
+    elif not partial:
+        fields["group"] = None
+    for key, limit, length in (("tags", 20, 40), ("dependsOn", 32, 64)):
+        if key in data:
+            normalized, err = validate_string_list(
+                data[key], key, max_items=limit, max_length=length)
+            if err:
+                return None, err
+            fields[key] = normalized
+        elif not partial:
+            fields[key] = []
+    if "healthCheck" in data:
+        health_check, err = validate_health_check(data["healthCheck"])
+        if err:
+            return None, err
+        fields["healthCheck"] = health_check
+    elif not partial:
+        fields["healthCheck"] = {
+            "type": "none", "url": None, "port": None,
+            "timeoutSec": 2, "intervalSec": 10, "failureThreshold": 3,
+        }
+    if "restartPolicy" in data:
+        policy = data["restartPolicy"]
+        if policy not in ("never", "on-failure", "always", "on-unhealthy"):
+            return None, "restartPolicy 必须是 never/on-failure/always/on-unhealthy"
+        fields["restartPolicy"] = policy
+    elif not partial:
+        fields["restartPolicy"] = "never"
+    for key, minimum, maximum, default in (
+            ("maxRestarts", 0, 100, 3),
+            ("restartDelaySec", 1, 300, 3)):
+        if key in data:
+            value, err = validate_bounded_int(data[key], key, minimum, maximum)
+            if err:
+                return None, err
+            fields[key] = value
+        elif not partial:
+            fields[key] = default
+    if "restartSuspended" in data:
+        if not isinstance(data["restartSuspended"], bool):
+            return None, "restartSuspended 必须是布尔值"
+        fields["restartSuspended"] = data["restartSuspended"]
+    elif not partial:
+        fields["restartSuspended"] = False
     for key in ("autoStart", "keepAlive"):
         if key in data:
             if not isinstance(data[key], bool):
                 return None, "%s 必须是布尔值" % key
             fields[key] = data[key]
+            if key == "keepAlive" and "restartPolicy" not in data:
+                fields["restartPolicy"] = "always" if data[key] else "never"
     if "kind" in data:
         fields["kind"] = data["kind"]
     elif not partial:
@@ -3951,9 +4376,131 @@ def validate_app_fields(data, partial):
     if kind == "link":
         fields["cwd"] = None
         fields.setdefault("command", "")
+        fields["dependsOn"] = []
+        fields["healthCheck"] = {
+            "type": "none", "url": None, "port": None,
+            "timeoutSec": 2, "intervalSec": 10, "failureThreshold": 3,
+        }
+        fields["restartPolicy"] = "never"
+        fields["autoStart"] = False
+        fields["keepAlive"] = False
     elif "url" in fields and fields["url"]:
         return None, "url 只适用于网址卡片（kind=link）"
+    if kind == "task":
+        fields["healthCheck"] = {
+            "type": "none", "url": None, "port": None,
+            "timeoutSec": 2, "intervalSec": 10, "failureThreshold": 3,
+        }
+        fields["restartPolicy"] = "never"
+        fields["keepAlive"] = False
+    if fields.get("restartPolicy") == "never":
+        fields["keepAlive"] = False
+    elif "restartPolicy" in fields:
+        fields["keepAlive"] = True
+    if "restartSuspended" in fields:
+        fields["keepAliveSuspended"] = fields["restartSuspended"]
     return fields, None
+
+
+PORTABLE_APP_FIELDS = (
+    "id", "name", "command", "cwd", "port", "emoji", "glyph", "kind", "url",
+    "group", "tags", "dependsOn", "healthCheck", "restartPolicy",
+    "maxRestarts", "restartDelaySec", "autoStart",
+)
+
+
+def export_portable_config(cfg):
+    """Build a backup payload without process identities, logs or icon paths."""
+    apps = []
+    for source in cfg.get("apps") or []:
+        app = {
+            key: json.loads(json.dumps(source.get(key), ensure_ascii=False))
+            for key in PORTABLE_APP_FIELDS
+        }
+        apps.append(app)
+    return {
+        "format": "local-ops-config",
+        "formatVersion": 1,
+        "schemaVersion": CURRENT_SCHEMA_VERSION,
+        "exportedAt": int(time.time()),
+        "apps": apps,
+        "watchedKeywords": list(cfg.get("watchedKeywords") or []),
+        "uiTheme": cfg.get("uiTheme") or DEFAULT_UI_THEME,
+    }
+
+
+def prepare_imported_config(payload, current, mode):
+    """Validate an exported backup and return a complete app list/settings."""
+    if not isinstance(payload, dict):
+        return None, "导入内容必须是 JSON 对象"
+    if payload.get("format") not in (None, "local-ops-config"):
+        return None, "不是总控台配置导出文件"
+    version = payload.get("schemaVersion", 0)
+    if isinstance(version, bool) or not isinstance(version, int):
+        return None, "schemaVersion 必须是整数"
+    if version > CURRENT_SCHEMA_VERSION:
+        return None, "导入配置来自更高版本的总控台"
+    raw_apps = payload.get("apps")
+    if not isinstance(raw_apps, list):
+        return None, "导入配置缺少 apps 数组"
+    if mode not in ("replace", "merge"):
+        return None, "导入模式必须是 replace/merge"
+    imported, used_ids = [], set()
+    for index, item in enumerate(raw_apps):
+        if not isinstance(item, dict):
+            return None, "第 %d 个应用不是对象" % (index + 1)
+        fields, error = validate_app_fields(item, partial=False)
+        if error:
+            return None, "第 %d 个应用：%s" % (index + 1, error)
+        app_id = item.get("id")
+        if (not isinstance(app_id, str)
+                or not re.fullmatch(r"[0-9a-fA-F]{8}", app_id)
+                or app_id in used_ids):
+            app_id = secrets.token_hex(4)
+            while app_id in used_ids:
+                app_id = secrets.token_hex(4)
+        used_ids.add(app_id)
+        app = json.loads(json.dumps(Config.APP_DEFAULT, ensure_ascii=False))
+        app.update(fields)
+        app.update({
+            "id": app_id, "icon": None, "favicon": None,
+            "lastPid": None, "lastPgid": None, "runToken": None,
+            "attached": False, "lastExit": None,
+            "createdAt": int(time.time()),
+        })
+        imported.append(app)
+    if mode == "merge":
+        combined = [
+            json.loads(json.dumps(app, ensure_ascii=False))
+            for app in current.get("apps") or []
+        ]
+        positions = {app.get("id"): index for index, app in enumerate(combined)}
+        for app in imported:
+            if app["id"] in positions:
+                combined[positions[app["id"]]] = app
+            else:
+                positions[app["id"]] = len(combined)
+                combined.append(app)
+    else:
+        combined = imported
+    dependency_error = validate_dependency_graph(combined)
+    if dependency_error:
+        return None, dependency_error
+    watched = payload.get(
+        "watchedKeywords",
+        current.get("watchedKeywords", []) if mode == "merge" else [])
+    watched, error = validate_string_list(
+        watched, "watchedKeywords", max_items=100, max_length=120)
+    if error:
+        return None, error
+    theme = payload.get(
+        "uiTheme",
+        current.get("uiTheme", DEFAULT_UI_THEME)
+        if mode == "merge" else DEFAULT_UI_THEME)
+    if not isinstance(theme, str) or not theme.strip():
+        return None, "uiTheme 必须是字符串"
+    return {"apps": combined, "watchedKeywords": watched,
+            "uiTheme": theme.strip()}, None
 
 
 # ---------------------------------------------------------------- HTTP 处理
@@ -4070,8 +4617,13 @@ class Handler(BaseHTTPRequestHandler):
         if self._parsed_request_host() is None:
             return False
         try:
-            return self.client_address[0] in ("127.0.0.1", "::1")
-        except (AttributeError, IndexError):
+            address = ipaddress.ip_address(self.client_address[0])
+            if address.is_loopback:
+                return True
+            # Docker 默认 bridge 会把宿主请求显示为私有网段来源。该放行只在
+            # 明确容器模式生效；官方 compose 仍只发布到宿主 127.0.0.1。
+            return os.environ.get("CONTAINER_ENV") == "1" and address.is_private
+        except (AttributeError, IndexError, ValueError):
             return False
 
     def _same_origin(self, origin, host):
@@ -4284,6 +4836,10 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/skills":
                 self.send_json(get_skills_snapshot())
                 return
+            if path == "/api/config/export":
+                self.send_json(export_portable_config(
+                    self.server.cfg.snapshot()))
+                return
             if path == "/api/console/log":
                 self.handle_console_log(parsed.query)
                 return
@@ -4388,6 +4944,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/watch":
                 self.handle_watch()
+                return
+            if path == "/api/config/import":
+                self.handle_config_import()
                 return
             if path == "/api/ui/theme":
                 self.handle_ui_theme()
@@ -4629,6 +5188,42 @@ class Handler(BaseHTTPRequestHandler):
         keywords = self.server.cfg.update(op)
         self.send_json({"ok": True, "keywords": keywords})
 
+    def handle_config_import(self):
+        data, err = self.read_json_body()
+        if err:
+            self.send_err(400, err)
+            return
+        mode = data.get("mode", "replace")
+        payload = data.get("config")
+        current = self.server.cfg.snapshot()
+        running = [
+            app.get("name") or app.get("id")
+            for app in current.get("apps") or []
+            if app_alive_sign(app)
+        ]
+        if running:
+            preview = "、".join(running[:5])
+            if len(running) > 5:
+                preview += " 等 %d 项" % len(running)
+            self.send_err(409, "导入前请先停止全部运行中的应用：" + preview)
+            return
+        prepared, error = prepare_imported_config(payload, current, mode)
+        if error:
+            self.send_err(400, error)
+            return
+
+        def op(c):
+            c["apps"] = prepared["apps"]
+            c["watchedKeywords"] = prepared["watchedKeywords"]
+            c["uiTheme"] = prepared["uiTheme"]
+            c["hidden"] = []
+            c["pinned"] = []
+            c["promoted"] = []
+            return {"apps": len(c["apps"]), "mode": mode}
+
+        result = self.server.cfg.update(op)
+        self.send_json({"ok": True, **result})
+
     def handle_app_create(self):
         data, err = self.read_json_body()
         if err:
@@ -4658,12 +5253,25 @@ class Handler(BaseHTTPRequestHandler):
                "port": fields["port"], "emoji": fields["emoji"],
                "glyph": fields["glyph"], "kind": fields["kind"],
                "url": fields["url"],
+               "group": fields["group"], "tags": fields["tags"],
+               "dependsOn": fields["dependsOn"],
+               "healthCheck": fields["healthCheck"],
+               "restartPolicy": fields["restartPolicy"],
+               "maxRestarts": fields["maxRestarts"],
+               "restartDelaySec": fields["restartDelaySec"],
+               "restartSuspended": fields["restartSuspended"],
                "autoStart": bool(fields.get("autoStart")),
                "keepAlive": bool(fields.get("keepAlive")),
+               "keepAliveSuspended": bool(fields.get("keepAliveSuspended")),
                "icon": None, "favicon": None, "lastPid": None,
                "lastPgid": None, "runToken": None,
                "attached": False, "lastExit": None,
                "createdAt": int(time.time())}
+        dependency_error = validate_dependency_graph(
+            list(snapshot.get("apps") or []) + [app])
+        if dependency_error:
+            self.send_err(400, dependency_error)
+            return
         cwd_updated = False
         if attach_pid is not None:
             ok, error, identity = inspect_attach_process(
@@ -4832,29 +5440,25 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"ok": False, "error": "端口 %d 已被 PID %d 占用" %
                             (port, occupied[0][0])}, 409)
             return
-        ok, err, proc, pgid, token = start_app(app)
+        deps_ok, deps_error, started_dependencies = ensure_dependencies_running(
+            self.server, app_id)
+        if not deps_ok:
+            self.send_json({"ok": False, "error": deps_error}, 422)
+            return
+        current = find_app(self.server.cfg.snapshot(), app_id)
+        if not current:
+            self.send_json({"ok": False, "error": "应用已被删除"}, 409)
+            return
+        # 一次性任务的正常形态就是快速退出，不能用服务健康等待误判成功任务。
+        wait_ready = (current.get("kind") or "service") != "task"
+        ok, error, pid, _ = start_managed_app(
+            self.server, current, wait_ready=wait_ready)
         if not ok:
-            self.send_json({"ok": False, "error": err})
+            self.send_json({"ok": False, "error": error,
+                            "dependenciesStarted": started_dependencies}, 422)
             return
-        if not persist_started_app(self.server.cfg, app_id, proc, pgid, token):
-            stop_pid_tree(pgid)
-            self.send_json({"ok": False, "error": "应用已被删除，已取消启动"}, 409)
-            return
-        # 一次性任务的正常形态就是快速退出，不能沿用服务的启动探测逻辑把
-        # `echo`、清缓存等成功任务误判成“启动失败”。退出线程会独立记录结果。
-        if (app.get("kind") or "service") == "task":
-            self.send_json({"ok": True, "pid": proc.pid})
-            return
-        deadline = time.monotonic() + STARTUP_PROBE_SEC
-        code = proc.poll()
-        while code is None and time.monotonic() < deadline:
-            time.sleep(0.025)
-            code = proc.poll()
-        if code is not None:
-            self.send_json({"ok": False,
-                            "error": startup_failure_message(app_id, code)}, 422)
-            return
-        self.send_json({"ok": True, "pid": proc.pid})
+        self.send_json({"ok": True, "pid": pid,
+                        "dependenciesStarted": started_dependencies})
 
     def handle_app_open(self, app_id):
         """网址卡片：用系统默认浏览器打开配置的网址（不运行任何命令）。"""
@@ -4939,13 +5543,15 @@ class Handler(BaseHTTPRequestHandler):
         if not ok:
             self.send_json({"ok": False, "error": error}, 409)
             return
-        if app.get("keepAlive"):
-            # 手动停止 = 挂起守护，避免守护立刻把服务拉回来。
+        if (app.get("restartPolicy") or "never") != "never" or app.get("keepAlive"):
+            # 手动停止 = 挂起自动重启，避免监控线程立刻把服务拉回来。
             def op(c):
                 target = find_app(c, app_id)
                 if target:
+                    target["restartSuspended"] = True
                     target["keepAliveSuspended"] = True
             self.server.cfg.update(op)
+            _KEEPALIVE_RUNTIME.pop(app_id, None)
         self.send_json({"ok": True})
 
     @serialized_app_operation
@@ -4989,16 +5595,14 @@ class Handler(BaseHTTPRequestHandler):
             }, 422)
             return
 
+        deps_ok, deps_error, _ = ensure_dependencies_running(self.server, app_id)
+        if not deps_ok:
+            self.send_err(422, deps_error)
+            return
+
         stopped, error = stop_app_and_clear(self.server.cfg, app)
         if not stopped:
             self.send_err(409, error or "旧进程停止失败，已取消重启")
-            return
-
-        port = app.get("port")
-        occupied = [(pid, p) for pid, p in scan_listeners() if p == port] if port else []
-        if occupied:
-            self.send_err(409, "端口 %d 已被 PID %d 占用，旧应用已停止" %
-                          (port, occupied[0][0]))
             return
 
         latest = self.server.cfg.snapshot()
@@ -5006,16 +5610,11 @@ class Handler(BaseHTTPRequestHandler):
         if not current:
             self.send_err(404, "应用已被删除")
             return
-        ok, err, proc, pgid, new_token = start_app(current)
+        ok, detail, pid, _ = start_managed_app(self.server, current)
         if not ok:
-            self.send_err(500, err)
+            self.send_err(422, "%s；旧应用已停止" % (detail or "重启失败"))
             return
-        if not persist_started_app(
-                self.server.cfg, app_id, proc, pgid, new_token):
-            stop_pid_tree(pgid)
-            self.send_err(409, "应用已被删除，已取消重启")
-            return
-        self.send_json({"ok": True, "pid": proc.pid})
+        self.send_json({"ok": True, "pid": pid})
 
     @serialized_app_operation
     def handle_icon_upload(self, app_id):
@@ -5102,6 +5701,16 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if target_kind != "link" and app.get("url") and "url" not in fields:
                 fields["url"] = None  # 离开网址类型时清空 url
+            candidate = dict(app)
+            candidate.update(fields)
+            candidate_apps = [
+                candidate if item.get("id") == app.get("id") else item
+                for item in self.server.cfg.snapshot().get("apps") or []
+            ]
+            dependency_error = validate_dependency_graph(candidate_apps)
+            if dependency_error:
+                self.send_err(400, dependency_error)
+                return
             lifecycle_fields = {"command", "cwd", "port", "kind"}
             lifecycle_changed = any(
                 key in fields and fields[key] != app.get(key)
@@ -5187,12 +5796,19 @@ class Handler(BaseHTTPRequestHandler):
         def op(c):
             before = len(c["apps"])
             c["apps"] = [a for a in c["apps"] if a.get("id") != app_id]
+            for other in c["apps"]:
+                other["dependsOn"] = [
+                    dep for dep in (other.get("dependsOn") or [])
+                    if dep != app_id]
             return len(c["apps"]) != before
 
         if not self.server.cfg.update(op):
             self.send_err(404, "应用不存在")
             return
         self.server.forget_app_lock(app_id)
+        with _HEALTH_RUNTIME_LOCK:
+            _HEALTH_RUNTIME.pop(app_id, None)
+        _KEEPALIVE_RUNTIME.pop(app_id, None)
 
         for ext in ICON_EXTS:
             for fname in (app_id + ext, "fav-" + app_id + ext):
@@ -5429,6 +6045,113 @@ KEEPALIVE_BLOCK_SEC = 300.0       # 达到上限后的冷却时长
 KEEPALIVE_POLL_SEC = 3.0
 
 _KEEPALIVE_RUNTIME = {}  # app_id -> {"fails", "blocked_until", "started_at"}
+_HEALTH_RUNTIME = {}     # app_id -> cached probe result and monotonic deadline
+_HEALTH_RUNTIME_LOCK = threading.Lock()
+
+
+def _probe_health_once(app):
+    config = app.get("healthCheck") or {}
+    kind = config.get("type") or "none"
+    timeout = max(1, min(int(config.get("timeoutSec") or 2), 30))
+    if kind == "process":
+        return True, "受控进程仍在运行"
+    if kind == "tcp":
+        port = config.get("port") or app.get("port")
+        if not port:
+            return False, "TCP 健康检查没有可用端口"
+        try:
+            with socket.create_connection(("127.0.0.1", int(port)), timeout=timeout):
+                return True, "TCP 端口 %d 可连接" % int(port)
+        except OSError as exc:
+            return False, "TCP 端口 %d 不可连接：%s" % (int(port), exc)
+    if kind == "http":
+        url = config.get("url") or ""
+        try:
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({}),
+                LoopbackHealthRedirectHandler(url))
+            request = urllib.request.Request(
+                url, headers={"User-Agent": "Local-Ops-Health/1"})
+            with opener.open(request, timeout=timeout) as response:
+                code = int(getattr(response, "status", 200))
+            return 200 <= code < 400, "HTTP %d" % code
+        except Exception as exc:
+            return False, "HTTP 检查失败：%s" % exc
+    return True, "未启用健康检查"
+
+
+def _record_health_result(app_id, config, fingerprint, healthy, detail):
+    now = time.monotonic()
+    with _HEALTH_RUNTIME_LOCK:
+        cached = _HEALTH_RUNTIME.get(app_id)
+        failures = 0 if healthy else (
+            int(cached.get("failures", 0)) + 1
+            if cached and cached.get("fingerprint") == fingerprint else 1)
+        threshold = max(1, min(int(config.get("failureThreshold") or 3), 10))
+        status = "healthy" if healthy else (
+            "unhealthy" if failures >= threshold else "checking")
+        public = {
+            "status": status, "type": config.get("type") or "none",
+            "failures": failures, "failureThreshold": threshold,
+            "checkedAt": int(time.time()), "detail": detail,
+        }
+        interval = max(2, min(int(config.get("intervalSec") or 10), 300))
+        _HEALTH_RUNTIME[app_id] = {
+            "fingerprint": fingerprint, "failures": failures,
+            "nextAt": now + interval, "public": public, "inFlight": False,
+        }
+        return dict(public)
+
+
+def _health_probe_worker(app, fingerprint):
+    healthy, detail = _probe_health_once(app)
+    _record_health_result(
+        app.get("id") or "", app.get("healthCheck") or {},
+        fingerprint, healthy, detail)
+
+
+def app_runtime_health(app, running=None, force=False):
+    """Return cached health immediately; TCP/HTTP refreshes run off the poll path."""
+    config = app.get("healthCheck") or {}
+    kind = config.get("type") or "none"
+    if kind == "none":
+        return {"status": "disabled", "type": "none", "failures": 0,
+                "checkedAt": None, "detail": "未启用健康检查"}
+    if running is None:
+        running = app_alive_sign(app)
+    if not running:
+        return {"status": "stopped", "type": kind, "failures": 0,
+                "checkedAt": None, "detail": "应用未运行"}
+    app_id = app.get("id") or ""
+    now = time.monotonic()
+    fingerprint = json.dumps(config, sort_keys=True, ensure_ascii=False)
+    with _HEALTH_RUNTIME_LOCK:
+        cached = _HEALTH_RUNTIME.get(app_id)
+        if (not force and cached and cached.get("fingerprint") == fingerprint
+                and now < cached.get("nextAt", 0)):
+            return dict(cached["public"])
+        if not force and kind in ("tcp", "http"):
+            if not cached or cached.get("fingerprint") != fingerprint:
+                cached = {
+                    "fingerprint": fingerprint, "failures": 0,
+                    "nextAt": 0, "inFlight": False,
+                    "public": {
+                        "status": "checking", "type": kind, "failures": 0,
+                        "failureThreshold": int(config.get("failureThreshold") or 3),
+                        "checkedAt": None, "detail": "等待首次健康检查",
+                    },
+                }
+                _HEALTH_RUNTIME[app_id] = cached
+            if not cached.get("inFlight"):
+                cached["inFlight"] = True
+                threading.Thread(
+                    target=_health_probe_worker,
+                    args=(json.loads(json.dumps(app, ensure_ascii=False)), fingerprint),
+                    name="health-%s" % app_id, daemon=True).start()
+            return dict(cached["public"])
+    healthy, detail = _probe_health_once(app)
+    return _record_health_result(
+        app_id, config, fingerprint, healthy, detail)
 
 
 def _keepalive_port_blocked(app, live):
@@ -5442,69 +6165,124 @@ def _keepalive_port_blocked(app, live):
     return False
 
 
-def _keepalive_should_start(app):
+def _restart_policy(app):
+    policy = app.get("restartPolicy") or "never"
+    if policy == "never" and app.get("keepAlive"):
+        return "always"
+    return policy
+
+
+def _keepalive_should_start(app, state=None):
     if (app.get("kind") or "service") != "service":
         return False
-    if not app.get("keepAlive"):
+    policy = _restart_policy(app)
+    if policy == "never":
         return False
-    if app.get("keepAliveSuspended"):
+    if app.get("restartSuspended") or app.get("keepAliveSuspended"):
         return False
     if app_alive_sign(app):
         return False
     if inspect_app_health(app)["blocking"]:
         return False
-    return True
+    if state and state.get("pending"):
+        return True
+    if policy == "always":
+        return True
+    last_exit = app.get("lastExit") or {}
+    code = last_exit.get("code")
+    return policy in ("on-failure", "on-unhealthy") and code not in (None, 0)
+
+
+def _suspend_restart(cfg, app_id):
+    def op(c):
+        target = find_app(c, app_id)
+        if target:
+            target["restartSuspended"] = True
+            target["keepAliveSuspended"] = True
+    cfg.update(op)
 
 
 def _keepalive_tick(server):
-    """守护监控单次巡检：对需要守护且已停止的服务按退避策略重启。
-
-    连续快速失败（拉起后 30s 内又退出）达上限后冷却 5 分钟，避免崩溃循环；
-    用户手动「停止」会写 keepAliveSuspended 挂起守护，直到再次启动/重启。
-    """
+    """Apply per-app restart policy with health checks, delay and retry limits."""
     cfg = server.cfg
     now = time.monotonic()
     for app in list(cfg.snapshot().get("apps") or []):
         app_id = app.get("id")
+        policy = _restart_policy(app)
+        if policy == "never" or app.get("restartSuspended") \
+                or app.get("keepAliveSuspended"):
+            continue
+        state = _KEEPALIVE_RUNTIME.setdefault(
+            app_id, {"attempts": 0, "next_at": 0.0,
+                     "started_at": 0.0, "pending": False})
         if app_alive_sign(app):
-            state = _KEEPALIVE_RUNTIME.get(app_id)
             if state and state.get("started_at") and \
                     now - state["started_at"] > KEEPALIVE_MIN_STABLE_SEC:
                 _KEEPALIVE_RUNTIME.pop(app_id, None)
+                state = {"attempts": 0, "next_at": 0.0,
+                         "started_at": 0.0, "pending": False}
+            if policy == "on-unhealthy":
+                runtime = app_runtime_health(app, running=True)
+                if runtime.get("status") == "unhealthy":
+                    lock = server.try_app_operation(app_id)
+                    if lock is None:
+                        continue
+                    try:
+                        current = find_app(cfg.snapshot(), app_id)
+                        if current and app_alive_sign(current):
+                            stopped, error = stop_app_and_clear(cfg, current)
+                            if stopped:
+                                state["pending"] = True
+                                state["next_at"] = now + max(
+                                    0, int(current.get("restartDelaySec") or 0))
+                                state["started_at"] = 0.0
+                                LOG.warning("健康检查失败，准备重启: %s (%s)",
+                                            current.get("name") or app_id,
+                                            runtime.get("detail") or "未知原因")
+                            else:
+                                LOG.warning("不健康服务停止失败: %s", error)
+                    finally:
+                        lock.release()
             continue
-        if not _keepalive_should_start(app):
+        if not _keepalive_should_start(app, state):
             continue
-        state = _KEEPALIVE_RUNTIME.setdefault(
-            app_id, {"fails": 0, "blocked_until": 0.0, "started_at": 0.0})
-        if now < state["blocked_until"]:
+        if now < state.get("next_at", 0.0):
             continue
-        if state["started_at"] and \
-                now - state["started_at"] < KEEPALIVE_MIN_STABLE_SEC:
-            state["fails"] += 1
-            state["started_at"] = 0.0
-            if state["fails"] >= KEEPALIVE_MAX_QUICK_FAILS:
-                state["blocked_until"] = now + KEEPALIVE_BLOCK_SEC
-                state["fails"] = 0
-                LOG.warning("守护重启 %s 连续失败 %d 次，冷却 %d 秒",
-                            app.get("name") or app_id,
-                            KEEPALIVE_MAX_QUICK_FAILS, int(KEEPALIVE_BLOCK_SEC))
+        max_restarts = max(0, int(app.get("maxRestarts") or 0))
+        if max_restarts and state.get("attempts", 0) >= max_restarts:
+            _suspend_restart(cfg, app_id)
+            LOG.warning("自动重启 %s 已达到上限 %d，已挂起",
+                        app.get("name") or app_id, max_restarts)
+            continue
+        deps_ok, deps_error, _ = ensure_dependencies_running(server, app_id)
+        if not deps_ok:
+            state["attempts"] = state.get("attempts", 0) + 1
+            state["next_at"] = now + max(1, int(app.get("restartDelaySec") or 0))
+            LOG.warning("自动重启依赖准备失败: %s", deps_error)
             continue
         lock = server.try_app_operation(app_id)
         if lock is None:
             continue
         try:
             current = find_app(cfg.snapshot(), app_id)
-            if not current or not _keepalive_should_start(current):
+            if not current or not _keepalive_should_start(current, state):
                 continue
             if _keepalive_port_blocked(current, set(managed_pids(current))):
                 continue
-            ok, err, proc, pgid, token = start_app(current)
-            if ok and persist_started_app(cfg, app_id, proc, pgid, token):
+            state["attempts"] = state.get("attempts", 0) + 1
+            state["pending"] = False
+            ok, error, pid, _ = start_managed_app(server, current)
+            if ok:
                 state["started_at"] = time.monotonic()
-                LOG.info("守护已重启服务: %s (pid %d)",
-                         current.get("name") or app_id, proc.pid)
+                state["next_at"] = state["started_at"] + max(
+                    0, int(current.get("restartDelaySec") or 0))
+                LOG.info("自动重启服务: %s (pid %d)",
+                         current.get("name") or app_id, pid)
             else:
-                LOG.warning("守护重启失败: %s", err or "应用状态已变化")
+                state["started_at"] = 0.0
+                state["next_at"] = time.monotonic() + max(
+                    1, int(current.get("restartDelaySec") or 0))
+                LOG.warning("自动重启失败: %s", error or "应用状态已变化")
         finally:
             lock.release()
 
@@ -5524,9 +6302,14 @@ def _autostart_boot(server):
     for app in list(cfg.snapshot().get("apps") or []):
         if (app.get("kind") or "service") != "service":
             continue
-        if not app.get("autoStart") or app.get("keepAliveSuspended"):
+        if not app.get("autoStart") or app.get("restartSuspended") \
+                or app.get("keepAliveSuspended"):
             continue
         if app_alive_sign(app) or inspect_app_health(app)["blocking"]:
+            continue
+        deps_ok, deps_error, _ = ensure_dependencies_running(server, app.get("id"))
+        if not deps_ok:
+            LOG.warning("随总控台启动依赖准备失败: %s", deps_error)
             continue
         lock = server.try_app_operation(app.get("id"))
         if lock is None:
@@ -5534,17 +6317,18 @@ def _autostart_boot(server):
         try:
             current = find_app(cfg.snapshot(), app.get("id"))
             if not current or not current.get("autoStart") \
+                    or current.get("restartSuspended") \
                     or current.get("keepAliveSuspended") \
                     or app_alive_sign(current):
                 continue
             if _keepalive_port_blocked(current, set(managed_pids(current))):
                 continue
-            ok, err, proc, pgid, token = start_app(current)
-            if ok and persist_started_app(cfg, current["id"], proc, pgid, token):
+            ok, error, pid, _ = start_managed_app(server, current)
+            if ok:
                 LOG.info("已随总控台启动: %s (pid %d)",
-                         current.get("name") or current["id"], proc.pid)
+                         current.get("name") or current["id"], pid)
             else:
-                LOG.warning("随总控台启动失败: %s", err or "应用状态已变化")
+                LOG.warning("随总控台启动失败: %s", error or "应用状态已变化")
         finally:
             lock.release()
 

@@ -10,6 +10,11 @@
 
 ### Added
 
+- 配置 schema 升级至 v2：应用新增分组、标签、多级启动依赖、进程/TCP/本机 HTTP 健康检查，以及 `never`、`on-failure`、`always`、`on-unhealthy` 四种重启策略。
+- 设置中心新增便携配置导出和合并导入；导出内容不包含 PID、进程组、运行令牌、日志、退出历史和本地图标路径。
+- 启动台新增动态分组筛选、标签/依赖/健康/重启策略徽章，添加与编辑面板新增完整编排设置。
+- 新增 Windows EXE 健康冒烟脚本、编排专项测试和锁定的 `requirements-build.txt`。
+
 - **技能工作台**：第三个主视图（导航轨 + 顶栏 tab），把本机已安装的 AI 技能集中展示并全部配上中文说明。
   - 后端新增 `GET /api/skills`：扫描 `~/.agents/skills`、`~/.claude/skills`、`~/.codex/skills` 三个技能库，用零依赖的 YAML frontmatter 子集解析器提取技能元数据，按技能名去重合并；与 `static/skills_zh.json` 中文索引（分类/简介/详解/使用场景）合并，并附带 `~/.agents/.skill-lock.json` 的来源仓库与安装时间；内存缓存按目录 mtime 指纹自动失效。
   - 中文索引：为当前 118 个唯一技能全量生成中文说明（`static/skills_zh.json`），缺失中文的技能在界面明确标注「暂无中文」并回退原文，不误导。
@@ -17,6 +22,9 @@
   - 新增 `tests/test_skills.py`（frontmatter 解析、库扫描、去重合并、中文索引合并、缓存指纹），`AGENTS.md`/`README.md` 同步三视图与 `/api/skills` 契约。
 
 ### Fixed
+
+- 修复项目检查器仍要求已移除的 macOS `.app` 文件、Node.js 新版测试摘要在 Windows 编码下无法识别，以及源码发行包执行位判断不兼容的问题。
+- 修复 Docker 镜像依赖修改源码才能监听、Compose 默认可能对局域网发布端口、中文工作目录无法推导 Compose 项目名的问题；容器监听改为显式环境变量，宿主端口固定绑定 `127.0.0.1`。
 
 - 修复状态缓存锁与配置锁按相反顺序嵌套导致的 ABBA 死锁：前端 2 秒一次的状态轮询恰好撞上任意写配置操作（如点「停止」）时，所有 API 从此永久无响应，页面只能强杀进程重启。现在缓存锁只保护缓存字典本身，快照构建由独立构建锁排队，并用代数（generation）防止失效后写回过期快照。附并发回归测试。
 - 修复 Windows 上 `/api/state` 每次构建约 13 秒（超过前端 12 秒超时）的性能问题：进程表从 PowerShell `Get-CimInstance`（单次 2-3 秒、每轮多次）改为原生 Toolhelp 快照 + PEB 命令行读取（全表约 30 毫秒），总内存改用 `GlobalMemoryStatusEx`。CIM 保留为原生路径异常时的退路。
@@ -84,6 +92,9 @@
 - 随主题移除不再使用的 Apollo 程序化纹理（deck/metal-brush 系列）、Candy 启动台插画与 `tools/gen_textures.py`；`ASSET_PROVENANCE.md` 与 `THIRD_PARTY_NOTICES.md` 同步核销。
 
 ### Security
+
+- 原生模式拒绝通过环境变量监听 `0.0.0.0`/`::`；容器宽监听仅在 `CONTAINER_ENV=1` 时允许，HTTP 来源校验仅额外接受 Docker 私有网段。
+- HTTP 健康检查仅允许回环地址，依赖启动失败时只回滚本次新启动的受控依赖，不按端口结束外部进程。
 
 - 将用户配置、日志、图标、token 和临时发行产物排除出版本控制默认范围。
 - 主配置与备份均无法验证时进入只读保护，防止用空默认配置覆盖尚可恢复的用户数据。

@@ -92,6 +92,9 @@ export function initWidgets() {
     applyTheme();
     syncSettings();
   });
+  $('#setExportConfig').addEventListener('click', exportConfigBackup);
+  $('#setImportConfig').addEventListener('click', () => $('#setImportFile').click());
+  $('#setImportFile').addEventListener('change', importConfigBackup);
 
   $('#feedClearL').addEventListener('click', clearFeed);
   $('#feedClearS').addEventListener('click', clearFeed);
@@ -120,6 +123,61 @@ export function initWidgets() {
   tipsAction.addEventListener('click', () => {
     const tab = $('#tab-services');
     if (tab) tab.click();
+  });
+}
+
+async function exportConfigBackup() {
+  const button = $('#setExportConfig');
+  button.disabled = true;
+  try {
+    const response = await fetch('/api/config/export');
+    const payload = await response.json();
+    if (!response.ok || payload.ok === false) throw new Error(payload.error || '导出失败');
+    const blob = new Blob([JSON.stringify(payload, null, 2) + '\n'],
+      { type: 'application/json;charset=utf-8' });
+    const link = document.createElement('a');
+    const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    link.href = URL.createObjectURL(blob);
+    link.download = 'local-ops-config-' + stamp + '.json';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(link.href);
+    toast('配置已导出');
+  } catch (error) {
+    toast(error.message || '配置导出失败');
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function importConfigBackup(event) {
+  const input = event.currentTarget;
+  const file = input.files && input.files[0];
+  input.value = '';
+  if (!file) return;
+  let payload;
+  try {
+    payload = JSON.parse(await file.text());
+  } catch (error) {
+    toast('配置文件不是有效 JSON');
+    return;
+  }
+  const count = Array.isArray(payload.apps) ? payload.apps.length : 0;
+  openConfirm({
+    title: '导入配置',
+    bodyHtml: '将合并导入 <strong>' + count + '</strong> 个应用；同 ID 配置会更新。' +
+      '<br>导入不会恢复 PID、运行令牌、日志或图标。是否继续？',
+    okText: '导入并合并',
+    tone: 'primary',
+    onOk: async () => {
+      const result = await act(post('/api/config/import', { mode: 'merge', config: payload }));
+      if (result && result.ok !== false) {
+        toast('已导入，共 ' + result.apps + ' 个应用');
+        closeSettingsCenter();
+        if (window.__poll) window.__poll();
+      }
+    },
   });
 }
 

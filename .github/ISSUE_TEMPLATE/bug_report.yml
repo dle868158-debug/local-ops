@@ -1,0 +1,52 @@
+name: 错误报告
+description: 报告可复现的功能或运行问题
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: 请先删除日志、截图和配置中的个人路径、命令、令牌及其他敏感信息。
+  - type: input
+    id: version
+    attributes:
+      label: 总控台版本
+      placeholder: 例如 1.0.0
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 运行方式
+      options:
+        - Windows EXE
+        - Windows 源码
+        - macOS/Linux 源码
+        - Docker
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 请提供最小、稳定的复现流程。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期结果
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果与脱敏日志
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: 隐私确认
+      options:
+        - label: 我已移除个人路径、真实命令、密钥、令牌和其他敏感信息。
+          required: true

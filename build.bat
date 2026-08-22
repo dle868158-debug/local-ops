@@ -29,13 +29,9 @@ exit /b 1
 :havepy
 %PY% --version
 
-echo [1/5] Checking packaging dependencies...
-%PY% -c "import PyInstaller" >nul 2>nul
-if errorlevel 1 %PY% -m pip install --upgrade pyinstaller
-%PY% -c "import PySide6" >nul 2>nul
-if errorlevel 1 %PY% -m pip install PySide6
-%PY% -c "import PIL" >nul 2>nul
-if errorlevel 1 %PY% -m pip install pillow
+echo [1/5] Installing locked packaging dependencies...
+%PY% -m pip install --disable-pip-version-check -r requirements-build.txt
+if errorlevel 1 goto faildeps
 
 echo [2/5] Generating EXE icon and version resource...
 %PY% tools\gen_ico.py
@@ -67,6 +63,10 @@ exit /b 1
 
 :failico
 echo [ERROR] Failed to generate icon/version resource.
+exit /b 1
+
+:faildeps
+echo [ERROR] Failed to install locked build dependencies.
 exit /b 1
 
 :failbuild

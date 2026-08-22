@@ -1,4 +1,4 @@
-version: '3.8'
+name: local-ops
 
 services:
   console:
@@ -7,9 +7,10 @@ services:
       dockerfile: Dockerfile
     container_name: local-console
     ports:
-      - "9600:9600"
+      - "127.0.0.1:9600:9600"
     environment:
       CONTAINER_ENV: "1"
+      CONSOLE_HOST: "0.0.0.0"
       CONSOLE_DATA_DIR: /app/data
       CONSOLE_LOG_DIR: /app/logs
     volumes:

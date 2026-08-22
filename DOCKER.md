@@ -8,13 +8,13 @@
 
 ```bash
 # 启动服务
-docker-compose up -d
+docker compose up -d --build
 
 # 停止服务
-docker-compose down
+docker compose down
 
 # 查看日志
-docker-compose logs -f console
+docker compose logs -f console
 ```
 
 访问：http://localhost:9600
@@ -29,7 +29,7 @@ docker volume create console-logs
 # 运行容器
 docker run -d \
   --name local-console \
-  -p 9600:9600 \
+  -p 127.0.0.1:9600:9600 \
   -v console-data:/app/data \
   -v console-logs:/app/logs \
   --restart unless-stopped \
@@ -71,7 +71,7 @@ docker run -d \
 ## 关键特性
 
 - ✅ 完整Python 3.12运行环境
-- ✅ 自动绑定到0.0.0.0（Docker容器友好）
+- ✅ 容器内显式绑定 `0.0.0.0`，宿主机仅发布到 `127.0.0.1`
 - ✅ 数据卷持久化
 - ✅ 健康检查集成
 - ✅ 自动重启策略
@@ -81,6 +81,7 @@ docker run -d \
 | 变量名 | 默认值 | 说明 |
 |--------|--------|------|
 | CONTAINER_ENV | 1 | 容器环境标志 |
+| CONSOLE_HOST | 0.0.0.0 | 容器内监听地址；原生模式不允许宽监听 |
 | CONSOLE_DATA_DIR | /app/data | 数据目录 |
 | CONSOLE_LOG_DIR | /app/logs | 日志目录 |
 
@@ -164,10 +165,8 @@ docker run -it --rm local-console:latest
 ```
 
 ### 权限问题
-```bash
-# 使用root用户运行
-docker run --user root local-console:latest
-```
+
+优先检查命名卷是否可写和挂载路径是否正确。不要把“改用 root”作为默认解决方案；如果必须调整用户，请先确认镜像内目录权限和最小权限边界。
 
 ## 性能建议
 
@@ -177,7 +176,8 @@ docker run --user root local-console:latest
 
 ## 安全提示
 
-- 仅在本地信任网络中使用
+- 官方 Compose 只发布到宿主 `127.0.0.1`；不要改成公网或局域网宽监听
+- Docker 只能观察和管理容器内进程，不能替代 Windows 原生版的宿主机服务监控
 - 定期备份 `/app/data` 目录中的配置
 - 不要将敏感信息写入命令行可见的命令
 
@@ -188,7 +188,7 @@ docker run --user root local-console:latest
 docker build -t local-console:latest .
 
 # 重启容器使用新镜像
-docker-compose up -d --force-recreate
+docker compose up -d --force-recreate
 # 或
 docker stop local-console
 docker rm local-console

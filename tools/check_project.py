@@ -22,7 +22,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 STATIC = ROOT / "static"
-INFO_PLIST = ROOT / "总控台.app" / "Contents" / "Info.plist"
 SEMVER_RE = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
     r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
@@ -109,10 +108,15 @@ def check_required_files() -> str:
         ".github/ISSUE_TEMPLATE/feature_request.yml",
         ".github/PULL_REQUEST_TEMPLATE.md",
         "requirements-dev.txt",
+        "requirements-build.txt",
         "Makefile",
         "server.py",
-        "start.command",
+        "console_gui.py",
         "start.bat",
+        "build.bat",
+        "总控台.spec",
+        "Dockerfile",
+        "docker-compose.yml",
         "tools/win_anchor.py",
         "tools/win_pick.py",
         "tests/test_server.py",
@@ -120,8 +124,6 @@ def check_required_files() -> str:
         "docs/screenshots/ops-services.jpg",
         "static/index.html",
         "static/app.js",
-        "总控台.app/Contents/Info.plist",
-        "总控台.app/Contents/MacOS/launcher",
     )
     missing = [name for name in required if not (ROOT / name).is_file()]
     require(not missing, "缺少必要文件: " + ", ".join(missing))
@@ -138,7 +140,6 @@ def check_asset_provenance() -> str:
         for item in sorted(folder.rglob("*"))
         if item.is_file()
     ]
-    tracked.append(ROOT / "总控台.app" / "Contents" / "Resources" / "AppIcon.icns")
     missing = [
         item.relative_to(ROOT).as_posix()
         for item in tracked
@@ -198,19 +199,14 @@ def read_version() -> str:
 
 def check_version() -> str:
     version = read_version()
-    with INFO_PLIST.open("rb") as handle:
-        info = plistlib.load(handle)
-    short = str(info.get("CFBundleShortVersionString", "")).strip()
-    build = str(info.get("CFBundleVersion", "")).strip()
-    version_major_minor = tuple(version.split("-", 1)[0].split(".")[:2])
-    short_parts = tuple(short.split(".")[:2])
-    require(
-        len(short_parts) == 2 and short_parts == version_major_minor,
-        f"Info.plist 版本 {short!r} 与 VERSION {version!r} 的 major.minor 不一致",
-    )
-    require(build.isdigit() and int(build) > 0, "CFBundleVersion 必须是正整数")
-    require(info.get("CFBundleExecutable") == "launcher", "CFBundleExecutable 不是 launcher")
-    return f"VERSION={version}, app={short} ({build})"
+    consumers = (ROOT / "server.py", ROOT / "tools" / "gen_ico.py")
+    missing = [
+        path.relative_to(ROOT).as_posix()
+        for path in consumers
+        if "VERSION" not in path.read_text(encoding="utf-8")
+    ]
+    require(not missing, "以下版本消费者未读取 VERSION: " + ", ".join(missing))
+    return f"VERSION={version}，Windows 资源由 tools/gen_ico.py 生成"
 
 
 def check_python_syntax() -> str:
@@ -395,38 +391,38 @@ def check_javascript_bindings() -> str:
 
 
 def check_shell_and_plist() -> str:
-    """macOS：bash 语法 + 可执行位 + plutil；Windows：无 /bin/bash，
-    跳过脚本检查，Info.plist 改用跨平台的 plistlib 校验可解析。"""
-    if sys.platform == "win32":
-        with INFO_PLIST.open("rb") as handle:
-            plistlib.load(handle)
-        return "启动脚本（Windows 跳过 bash 检查）+ Info.plist"
-    shell_files = (
-        ROOT / "start.command",
-        ROOT / "总控台.app" / "Contents" / "MacOS" / "launcher",
-    )
-    for path in shell_files:
-        command_output(["/bin/bash", "-n", str(path)])
-        require(os.access(path, os.X_OK), f"{path.relative_to(ROOT)} 没有可执行权限")
-    plutil = shutil.which("plutil") or "/usr/bin/plutil"
-    command_output([plutil, "-lint", str(INFO_PLIST)])
-    return "2 个启动脚本 + Info.plist"
+    """静态核验 Windows 启动/构建脚本；可用时检查 Docker shell 语法。"""
+    batch_files = (ROOT / "start.bat", ROOT / "build.bat", ROOT / "docker-start.bat")
+    for path in batch_files:
+        text = path.read_text(encoding="utf-8", errors="replace").lower()
+        require("@echo off" in text, f"{path.name} 缺少 @echo off")
+    spec = (ROOT / "总控台.spec").read_text(encoding="utf-8")
+    require("console_gui.py" in spec, "总控台.spec 未使用 console_gui.py")
+    require("console=False" in spec, "总控台.spec 未关闭控制台窗口")
+    shell = ROOT / "docker-start.sh"
+    bash = shutil.which("bash")
+    if sys.platform != "win32" and bash and shell.is_file():
+        command_output([bash, "-n", str(shell)])
+    return "3 个 Windows 脚本 + PyInstaller spec + Docker shell"
 
 
 def check_dev_requirements() -> str:
-    path = ROOT / "requirements-dev.txt"
-    lines = [
-        line.strip()
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
-    require(bool(lines), "requirements-dev.txt 为空")
-    unpinned = [
-        line for line in lines
-        if not re.fullmatch(r"[A-Za-z0-9_.-]+==[A-Za-z0-9_.+!-]+", line)
-    ]
-    require(not unpinned, "开发依赖必须精确锁定: " + ", ".join(unpinned))
-    return f"{len(lines)} 个锁定依赖"
+    total = 0
+    for filename in ("requirements-dev.txt", "requirements-build.txt"):
+        path = ROOT / filename
+        lines = [
+            line.strip()
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        require(bool(lines), f"{filename} 为空")
+        unpinned = [
+            line for line in lines
+            if not re.fullmatch(r"[A-Za-z0-9_.-]+==[A-Za-z0-9_.+!-]+", line)
+        ]
+        require(not unpinned, f"{filename} 存在未锁定依赖: " + ", ".join(unpinned))
+        total += len(lines)
+    return f"开发/构建共 {total} 个锁定依赖"
 
 
 def check_themes() -> str:
@@ -563,11 +559,13 @@ def check_javascript_tests() -> str:
     files = sorted(str(path) for path in (ROOT / "tests" / "js").glob("*.test.mjs"))
     require(bool(files), "tests/js/ 下没有 .test.mjs 测试文件")
     output = command_output([node, "--test", *files])
-    # node 22 及更早用 TAP 摘要（# pass 7）；node 24+ 用 spec reporter（ℹ pass 7）
-    match = re.search(r"(?:#|ℹ)\s*(pass|fail)\s+(\d+)", output)
+    # node 22 及更早用 TAP 摘要（# pass 7）；node 24+ 用 spec reporter（ℹ pass 7）。
+    # Windows 非 UTF-8 控制台可能把 ℹ 解码成多个乱码字符，因此不依赖前缀字形。
+    match = re.search(r"(?m)^\s*\S*\s*pass\s+(\d+)\s*$", output)
     require(match is not None, "无法确认 node --test 结果")
-    passed = int(match.group(2))
-    require("# fail" not in output or re.search(r"# fail\s+0$", output, re.M),
+    passed = int(match.group(1))
+    failed = re.search(r"(?m)^\s*\S*\s*fail\s+(\d+)\s*$", output)
+    require(failed is None or int(failed.group(1)) == 0,
             "JavaScript 测试存在失败项")
     return f"{passed} 个测试"
 
@@ -621,7 +619,7 @@ def main() -> int:
         ("Python 语法", check_python_syntax),
         ("JavaScript 语法", check_javascript_syntax),
         ("JavaScript 模块绑定", check_javascript_bindings),
-        ("启动脚本与 plist", check_shell_and_plist),
+        ("启动与构建脚本", check_shell_and_plist),
         ("开发依赖锁定", check_dev_requirements),
         ("素材来源台账", check_asset_provenance),
         ("主题注册表", check_themes),

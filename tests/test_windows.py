@@ -226,8 +226,8 @@ class WindowsProcessTests(unittest.TestCase):
         self.assertEqual(server.parse_win_pick_output("__CANCELED__\n", 0),
                          (None, True))
         self.assertEqual(
-            server.parse_win_pick_output("C:\\Users\\demo\\blog\n", 0),
-            ("C:\\Users\\demo\\blog", False))
+            server.parse_win_pick_output("C:\\Users\\example\\blog\n", 0),
+            ("C:\\Users\\example\\blog", False))
         self.assertEqual(server.parse_win_pick_output("", 1), (None, False))
 
     def test_win_pick_helper_com_creates(self):
