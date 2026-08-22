@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  console:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: local-console
+    ports:
+      - "9600:9600"
+    environment:
+      CONTAINER_ENV: "1"
+      CONSOLE_DATA_DIR: /app/data
+      CONSOLE_LOG_DIR: /app/logs
+    volumes:
+      - console-data:/app/data
+      - console-logs:/app/logs
+      - ./static:/app/static:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9600/api/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  console-data:
+    driver: local
+  console-logs:
+    driver: local

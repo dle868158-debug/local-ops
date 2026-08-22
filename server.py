@@ -1242,8 +1242,16 @@ def _parse_netstat_output(text):
 
 
 def _scan_listeners_windows():
-    """netstat -ano -p tcp 解析（本地化系统上状态列仍为英文 LISTENING）。"""
-    return _parse_netstat_output(run_cmd(["netstat", "-ano", "-p", "tcp"]))
+    """netstat -ano 解析（合并 IPv4 与 IPv6 的 TCP 监听）。
+
+    仅用 ``-p tcp`` 会漏掉只绑定 IPv6 回环 ``::1`` 的服务（如 Vite 默认
+    的 dev server），导致端口占用/认领对它失效；同时跑 ``tcpv6`` 后
+    ``_parse_netstat_output`` 已能解析 ``[::1]:5173`` 形式的本地地址。
+    """
+    found = {}
+    for proto in ("tcp", "tcpv6"):
+        found.update(_parse_netstat_output(run_cmd(["netstat", "-ano", "-p", proto])))
+    return found
 
 
 def listener_open_host(listeners, port, pids=None):
