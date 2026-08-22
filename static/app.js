@@ -23,6 +23,8 @@ import { configuredPort, actualPorts, portIsOpenable,
 
 /* ---------------- DOM 引用 ---------------- */
 const banner = $('#banner');
+const bannerMessage = $('#bannerMessage');
+const bannerDismiss = $('#bannerDismiss');
 const sideNav = $('#sideNav');
 const navBtns = [...sideNav.querySelectorAll('.nav-btn')];
 const viewTitle = $('#viewTitle');
@@ -220,34 +222,91 @@ const HEALTH_COMPONENT_NAMES = {
   version: '版本',
   config: '配置',
 };
+const MIGRATION_NOTICE_PREFIX = 'console-migration-notice:';
+const MIGRATION_NOTICE_DURATION_MS = 6000;
+const acknowledgedMigrationNotices = new Set();
+const migrationNoticeState = { key: '', until: 0, timer: null };
+
+function migrationNoticeKey(data) {
+  const health = data && data.configHealth || {};
+  if (health.migratedFromSchema == null) return '';
+  const from = String(health.migratedFromSchema);
+  const to = String(data.schemaVersion == null ? 'current' : data.schemaVersion);
+  return MIGRATION_NOTICE_PREFIX + from + '-' + to;
+}
+
+function migrationNoticeVisible(data) {
+  const key = migrationNoticeKey(data);
+  if (!key) return false;
+  const now = Date.now();
+  if (migrationNoticeState.key === key && now < migrationNoticeState.until) {
+    return true;
+  }
+  let acknowledged = acknowledgedMigrationNotices.has(key);
+  try {
+    acknowledged = acknowledged || localStorage.getItem(key) === '1';
+  } catch (_) { /* Web storage 不可用时，本次进程内仍只显示一次。 */ }
+  if (acknowledged) return false;
+
+  acknowledgedMigrationNotices.add(key);
+  try {
+    localStorage.setItem(key, '1');
+  } catch (_) { /* 只依赖上面的内存兜底。 */ }
+  migrationNoticeState.key = key;
+  migrationNoticeState.until = now + MIGRATION_NOTICE_DURATION_MS;
+  clearTimeout(migrationNoticeState.timer);
+  migrationNoticeState.timer = setTimeout(() => {
+    if (migrationNoticeState.key !== key) return;
+    migrationNoticeState.until = 0;
+    setConnected(true);
+  }, MIGRATION_NOTICE_DURATION_MS);
+  return true;
+}
+
+function setBannerMessage(message, dismissible = false) {
+  bannerMessage.textContent = message;
+  bannerDismiss.hidden = !dismissible;
+}
+
+function dismissMigrationNotice() {
+  migrationNoticeState.until = 0;
+  clearTimeout(migrationNoticeState.timer);
+  setConnected(true);
+}
+
+bannerDismiss.addEventListener('click', dismissMigrationNotice);
 /* Windows 与 macOS 的启动器名称不同，重启/停止提示按平台切换 */
 function launcherName() {
   return state.data && state.data.platform === 'win32' ? 'start.bat' : '总控台.app';
 }
 function stateHealthNotice(data) {
-  if (!data) return '';
+  if (!data) return { message: '', dismissible: false };
   const health = data.configHealth || {};
-  const messages = [];
+  const persistentMessages = [];
   if (data.degraded) {
     const components = [...new Set((data.degradedReasons || [])
       .map(item => HEALTH_COMPONENT_NAMES[item && item.component] || '部分组件'))];
-    messages.push('降级运行：' + (components.length ? components.join('、') : '部分组件') +
+    persistentMessages.push('降级运行：' + (components.length ? components.join('、') : '部分组件') +
       '数据可能不完整');
   }
   if (health.writable === false) {
-    messages.push('配置处于只读保护，修改不会保存');
+    persistentMessages.push('配置处于只读保护，修改不会保存');
   } else if (health.recoveredFromBackup) {
-    messages.push('配置已从备份恢复，请核对内容');
+    persistentMessages.push('配置已从备份恢复，请核对内容');
   }
-  if (health.migratedFromSchema != null) {
-    messages.push('配置已从旧版本升级');
-  }
-  return messages.length ? messages.join('；') + '。' : '';
+  const migrationMessage = migrationNoticeVisible(data)
+    ? '配置已从旧版本升级' : '';
+  const messages = migrationMessage
+    ? [...persistentMessages, migrationMessage] : persistentMessages;
+  return {
+    message: messages.length ? messages.join('；') + '。' : '',
+    dismissible: persistentMessages.length === 0 && !!migrationMessage,
+  };
 }
 function setConnected(ok, message = '') {
   if (!ok) {
     if (!state.restartingFrom && !state.stopping) {
-      banner.textContent = message || DISCONNECTED_TEXT;
+      setBannerMessage(message || DISCONNECTED_TEXT);
     }
     banner.classList.add('show');
     banner.setAttribute('aria-hidden', 'false');
@@ -255,9 +314,9 @@ function setConnected(ok, message = '') {
   }
   if (state.restartingFrom || state.stopping) return;
   const notice = stateHealthNotice(state.data);
-  banner.textContent = notice || DISCONNECTED_TEXT;
-  banner.classList.toggle('show', !!notice);
-  banner.setAttribute('aria-hidden', String(!notice));
+  setBannerMessage(notice.message || DISCONNECTED_TEXT, notice.dismissible);
+  banner.classList.toggle('show', !!notice.message);
+  banner.setAttribute('aria-hidden', String(!notice.message));
 }
 function render() {
   if (!state.data) return;
@@ -322,7 +381,7 @@ restartConsoleBtn.addEventListener('click', () => {
     onOk: async () => {
       suspendPortDiscovery();
       state.restartingFrom = consolePid;
-      banner.textContent = '总控台正在重新启动，页面会自动恢复…';
+      setBannerMessage('总控台正在重新启动，页面会自动恢复…');
       banner.classList.add('show');
       banner.setAttribute('aria-hidden', 'false');
       render();
@@ -360,7 +419,7 @@ stopConsoleBtn.addEventListener('click', () => {
     okText: '停止运行',
     onOk: async () => {
       state.stopping = true;
-      banner.textContent = '总控台正在停止…再次启动请双击“' + launcherName() + '”。';
+      setBannerMessage('总控台正在停止…再次启动请双击“' + launcherName() + '”。');
       banner.classList.add('show');
       banner.setAttribute('aria-hidden', 'false');
       render();
@@ -371,7 +430,7 @@ stopConsoleBtn.addEventListener('click', () => {
         render();
         return;
       }
-      banner.textContent = '总控台已停止。再次启动请双击“' + launcherName() + '”。';
+      setBannerMessage('总控台已停止。再次启动请双击“' + launcherName() + '”。');
     },
   });
 });

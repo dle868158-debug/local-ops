@@ -127,6 +127,7 @@ kbd {
 .banner {
   position: fixed; top: 0; left: 0; right: 0; z-index: 400;
   display: flex; align-items: center; justify-content: center;
+  gap: 10px;
   height: 38px;
   font-size: 12.5px; font-weight: 600; letter-spacing: 0.04em;
   color: var(--amber); background: var(--card);
@@ -135,6 +136,19 @@ kbd {
   transition: transform 0.22s var(--ease);
 }
 .banner.show { transform: translateY(0); }
+.banner-dismiss {
+  position: absolute; right: 16px;
+  width: 26px; height: 26px; padding: 0;
+  display: grid; place-items: center;
+  color: currentColor; background: transparent;
+  border: 0; border-radius: 6px;
+  font: 600 20px/1 var(--font-ui); cursor: pointer;
+  opacity: 0.72;
+  transition: opacity 0.15s ease, background 0.15s ease;
+}
+.banner-dismiss:hover { opacity: 1; background: var(--hover); }
+.banner-dismiss:focus-visible { outline: 2px solid currentColor; outline-offset: 1px; }
+.banner-dismiss[hidden] { display: none; }
 
 /* ---------- 布局 ---------- */
 .shell { position: relative; z-index: 1; display: flex; flex-direction: column; height: 100vh; }

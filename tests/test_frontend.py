@@ -224,6 +224,21 @@ class FrontendAccessibilityContractTests(unittest.TestCase):
         self.assertIn("const isTask = modalKind === 'task'", overlays)
         self.assertIn("const stopVerb = isTask ? '中止任务' : '停止服务'", overlays)
 
+    def test_config_migration_notice_is_one_time_and_dismissible(self):
+        html = (ROOT / "static/index.html").read_text(encoding="utf-8")
+        app = (ROOT / "static/app.js").read_text(encoding="utf-8")
+        css = (ROOT / "static/themes/ops.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="bannerMessage"', html)
+        self.assertIn('id="bannerDismiss"', html)
+        self.assertIn("MIGRATION_NOTICE_PREFIX", app)
+        self.assertIn("MIGRATION_NOTICE_DURATION_MS", app)
+        self.assertIn("localStorage.getItem(key)", app)
+        self.assertIn("localStorage.setItem(key, '1')", app)
+        self.assertIn("bannerDismiss.addEventListener('click'", app)
+        self.assertIn("dismissible: persistentMessages.length === 0", app)
+        self.assertIn(".banner-dismiss", css)
+
     def test_new_port_discovery_is_session_scoped_and_actionable(self):
         html = (ROOT / "static/index.html").read_text(encoding="utf-8")
         services = (ROOT / "static/js/services.js").read_text(encoding="utf-8")

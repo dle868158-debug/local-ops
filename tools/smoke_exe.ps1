@@ -56,6 +56,13 @@ try {
     if (-not $health -or $health.status -ne 'ok') {
         throw 'EXE 未在 75 秒内通过 /api/health'
     }
+    $appJs = Invoke-WebRequest -Uri "$baseUrl/app.js" -WebSession $session `
+        -TimeoutSec 5
+    if ($appJs.Content -notmatch 'MIGRATION_NOTICE_PREFIX' -or
+            $appJs.Content -notmatch 'bannerDismiss') {
+        throw 'EXE 未包含一次性配置迁移提示修复'
+    }
+    Write-Output 'Packaged frontend passed: one-time migration notice present'
     $null = Invoke-RestMethod -Uri "$baseUrl/api/console/stop" -Method Post `
         -ContentType 'application/json' -Body '{}' -Headers @{ Origin = $baseUrl } `
         -WebSession $session -TimeoutSec 5

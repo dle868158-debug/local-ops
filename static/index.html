@@ -15,8 +15,11 @@
 </head>
 <body>
 
-<!-- 断连横幅 -->
-<div class="banner" id="banner" role="status" aria-live="polite" aria-atomic="true" aria-hidden="true">控制台连接断开，正在自动重连…</div>
+<!-- 断连与状态横幅 -->
+<div class="banner" id="banner" role="status" aria-live="polite" aria-atomic="true" aria-hidden="true">
+  <span id="bannerMessage">控制台连接断开，正在自动重连…</span>
+  <button class="banner-dismiss" id="bannerDismiss" type="button" aria-label="关闭提示" title="关闭提示" hidden>×</button>
+</div>
 <div class="sr-only" id="reorderInstructions">
   应用卡片可排序。聚焦卡片后按空格开始，使用方向键移动，空格确认，Escape 取消。
 </div>
