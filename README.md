@@ -1,24 +1,28 @@
-# 总控台
+# 总控台（Local Ops Console）
 
-**Preview / Alpha · 源码预览**
+![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)
+![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?logo=windows11&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-可选-2496ED?logo=docker&logoColor=white)
+![License](https://img.shields.io/badge/License-MIT-green)
 
-总控台是一个面向 macOS 的本地服务与批处理任务快速启动、运行监测工具。它把常用项目命令、长期服务和一次性批处理任务集中到本地网页中，并用 Python 3 标准库提供只绑定回环地址的后端；前端是无构建、无 CDN 的原生 HTML/CSS/JavaScript。
+总控台是一款面向个人开发者和本地工作站的服务启动、进程监控与任务管理工具。它把常用项目、长期服务、一次性任务和网址入口集中到一个中文网页中，支持查看端口、进程、运行时长、日志和配置健康状态。
 
-> 当前版本仍处于 Preview / Alpha 阶段，以源码预览形式提供。接口、配置格式和安装方式仍可能调整；`总控台.app` 目前不是可单独复制的自包含应用，也尚不代表经过签名、公证的最终 macOS 发行版。
+本分支重点适配 **Windows 10/11**，同时保留 macOS 源码运行能力，并提供 Docker 部署示例。后端以 Python 标准库为主，前端使用原生 HTML、CSS 和 JavaScript，无需 Node.js、前端框架、CDN 或构建工具。
 
-总控台只服务当前 Mac 和当前用户，不是远程运维、多人协作或公网管理面板。它能够以当前用户权限执行保存的 shell 命令；不要将监听地址、反向代理、SSH 隧道或端口映射暴露到不受信任的网络。
+> [!IMPORTANT]
+> 总控台会以当前用户权限执行你保存的命令。它是本机个人工具，不是带有身份认证的公网运维面板。原生模式默认只监听 `127.0.0.1`，请勿通过端口映射、反向代理或隧道直接暴露到不受信任的网络。
 
-## 功能
+## 主要功能
 
-- 每 2 秒查看当前用户的本地监听服务、CPU、内存和运行时长。
-- 保存常用服务或批处理任务，集中启动、停止、重启、查日志和诊断。
-- 在当前页面会话中发现新出现的、尚未管理的监听端口，可直接加入启动台或忽略隐藏。
-- 运行前检查工作目录、脚本和运行时；明确失效时直接给出修复入口，不必先失败一次。
-- 从项目文件夹识别常用启动命令，但不安装依赖、不执行项目代码。
-- 通过运行 token、进程组和当前 UID 联合识别受控进程，不会因端口相同就杀死外部进程。
-- Ops 指挥台单一主题：深空蓝黑/雾灰双色，左侧导航轨、KPI 概览卡、实时动态侧栏，浅色、深色和跟随系统。
-- 全局命令面板可直接添加服务或批处理任务；启动台卡片支持鼠标拖拽和键盘排序。
-- **技能工作台**：一目了然掌握本机已安装的 AI 技能（DeepSeek/Claude/Codex 三个技能库自动合并去重），全部技能配中文说明——分类、一句话简介、详解、使用场景与触发方式，支持中文/英文搜索、分类与来源筛选、详情抽屉，新技能缺失中文时明确标注并回退原文。
+- **启动台**：保存和管理长期服务、批处理任务与网址卡片，一键启动、停止、重启、运行或打开。
+- **服务监控**：每 2 秒发现当前用户的本地监听端口，展示 PID、工作目录、内存、运行时长和启动来源。
+- **安全认领进程**：通过运行令牌、进程树、当前用户和工作目录识别受控进程，不会仅凭端口结束其他程序。
+- **项目自动识别**：只读分析项目根目录，为 Node.js、Python、Docker、Go、Rust、静态站点等项目推荐启动命令。
+- **配置与运行诊断**：在启动前检查工作目录、脚本、运行时和端口占用，并提供可执行的修复建议。
+- **任务状态记录**：区分成功、失败、取消和总控台中止，记录退出码、完成时间及耗时。
+- **日志中心**：集中查看应用日志和总控台自身日志，大文件自动轮转。
+- **技能工作台**：扫描 `~/.agents/skills`、`~/.claude/skills` 和 `~/.codex/skills`，合并去重并提供中文分类、搜索与详情。
+- **中文 Ops 界面**：支持浅色、深色和跟随系统，包含导航轨、KPI 概览、实时动态和响应式布局。
 
 ## 界面预览
 
@@ -26,312 +30,347 @@
 
 | 启动台 | 服务监控 |
 | --- | --- |
-| ![Ops 指挥台 · 启动台](docs/screenshots/ops-launchpad.jpg) | ![Ops 指挥台 · 服务监控](docs/screenshots/ops-services.jpg) |
+| ![总控台启动台](docs/screenshots/ops-launchpad.jpg) | ![总控台服务监控](docs/screenshots/ops-services.jpg) |
 
-## 系统要求
+## 技术架构
 
-- **macOS 12 或更高版本**，或 **Windows 10/11（64 位）**。
-- Python 3.12。运行时仅使用 Python 标准库。
-- macOS 自带的 `ps`、`lsof`、`osascript` 等系统工具；Windows 自带的
-  `netstat`、`taskkill`、`powershell`（PowerShell 5.1 已内置）。
-- Safari、Chrome、Edge 或其他支持 ES Modules 的现代浏览器。
+| 层级 | 实现 |
+| --- | --- |
+| 后端 | Python 3.12+ 标准库，单文件 `server.py` |
+| 前端 | 原生 HTML、CSS、JavaScript ES Modules，无构建流程 |
+| 通信 | 本地 HTTP JSON API，原生模式仅绑定回环地址 |
+| Windows 进程管理 | `netstat`、PowerShell CIM、`taskkill`、PPID 后代树与锚点进程 |
+| macOS 进程管理 | `lsof`、`ps`、进程组与信号 |
+| 配置存储 | 本地 JSON，线程锁保护，临时文件写入后原子替换，保留 `.bak` |
+| Windows 桌面壳 | PySide6 WebEngine，可打包为单文件 EXE |
+| Docker | `python:3.12-slim`、Docker Compose、命名卷持久化 |
 
-`VERSION` 是项目版本的唯一权威来源。`Info.plist`、发行包名和发行说明应与它保持一致。
+## 环境要求
 
-## 安装
+### 原生运行
 
-总控台以完整项目目录运行，`总控台.app` 是项目内启动器，不是可以单独复制的自包含应用。
+| 项目 | 最低要求 | 说明 |
+| --- | --- | --- |
+| 操作系统 | Windows 10/11 64 位 | 推荐 Windows 11；macOS 可通过源码运行 |
+| Python | 3.12 或更高版本 | 启动 Web 服务无需安装第三方 Python 包 |
+| PowerShell | Windows PowerShell 5.1 或 PowerShell 7 | 用于读取 Windows 进程信息 |
+| 系统工具 | `netstat`、`taskkill` | Windows 系统自带 |
+| 浏览器 | Edge、Chrome、Firefox、Safari 等现代浏览器 | 需要支持 ES Modules |
+| 网络 | 仅本机访问即可 | 原生模式默认监听 `127.0.0.1` |
 
-1. **下载并解压**：将发行 zip 解压到一个你有读写权限的位置（如 `~/Applications` 或文稿下的固定目录）。解压后请保持目录结构完整，不要单独移动 `总控台.app`。
-2. **确认 Python 3.12**：在「终端」运行：
+### Windows EXE 打包
 
-   ```bash
-   python3 --version
+除上述环境外，还需要联网安装以下构建依赖：
+
+- PyInstaller
+- PySide6
+- Pillow
+
+`build.bat` 会优先创建隔离的 `.buildenv` 虚拟环境并自动检查、安装这些依赖。它们只用于打包，不是运行 `server.py` 的必需依赖。
+
+### Docker 运行
+
+- Docker Desktop，或可用的 Docker Engine
+- Docker Compose v2（推荐使用 `docker compose`）
+- 至少 500 MB 可用磁盘空间
+
+## 快速开始
+
+### 方式一：Windows 源码运行（推荐）
+
+1. 安装 [Python 3.12 或更高版本](https://www.python.org/downloads/)，安装时建议勾选“Add Python to PATH”。
+2. 克隆 `windows-support` 分支：
+
+   ```powershell
+   git clone --branch windows-support --single-branch https://github.com/dle868158-debug/local-ops.git
+   Set-Location .\local-ops
    ```
 
-   显示 3.12 或更高即可。未安装或版本过低时，到 <https://www.python.org/downloads/> 下载官方 macOS 安装包，按向导安装一次即可（之后不再需要操作）。
-3. **首次打开（未签名应用，二选一）**：
-   - 图形方式：在 `总控台.app` 上**点右键 → 打开**，在弹窗中再点「打开」。只需做一次。
-   - 命令行方式（等价，适合批量或远程）：
+3. 检查 Python：
 
-     ```bash
-     xattr -dr com.apple.quarantine "总控台.app"
-     ```
+   ```powershell
+   py -3 --version
+   ```
 
-     之后即可正常双击。这是 macOS 对互联网下载应用的常规隔离提示，不是程序损坏。
+4. 启动总控台：
 
-## 运行
+   ```powershell
+   .\start.bat
+   ```
 
-启动总控台有且只有三种方式，效果相同，按习惯选择：
+   也可以直接运行：
 
-| 方式 | 操作 | 适用场景 |
-| --- | --- | --- |
-| 双击应用 | 双击 `总控台.app` | macOS 日常使用。后台运行，无 Terminal 窗口和 Dock 图标 |
-| 双击脚本 | 双击 `start.command`（macOS）/ `start.bat`（Windows） | 想在终端窗口里看实时输出 |
-| 命令行 | `python3 server.py`（macOS）/ `py -3 server.py`（Windows） | 调试、脚本化或远程启动 |
+   ```powershell
+   py -3 server.py
+   ```
 
-命令行还有两个可选参数：
+启动后会自动打开浏览器。默认地址为 <http://127.0.0.1:9600>；如果 9600 已被占用，程序会依次尝试 9601—9609。
 
-```bash
-python3 server.py --no-browser        # 只启动服务，不自动打开浏览器
-python3 server.py --preferred-port 9603  # 在 9600-9609 内指定优先端口
+常用启动参数：
+
+```powershell
+py -3 server.py --no-browser
+py -3 server.py --preferred-port 9603
 ```
 
-启动后程序只绑定 `127.0.0.1`，从 9600 起尝试端口，被占用则递增（最多 10 个），并自动打开浏览器。命令行参数、环境变量（`CONSOLE_DATA_DIR` / `CONSOLE_LOG_DIR`）见下文“数据、隐私与备份”。
+- `--no-browser`：只启动服务，不自动打开浏览器。
+- `--preferred-port`：在 9600—9609 范围内指定优先端口。
 
-**实际地址在哪里看**：顶栏「重启 :9600」按钮上直接显示当前端口；或看终端输出 / `~/Library/Logs/总控台/console.log`。浏览器手动访问 `http://127.0.0.1:端口号/` 即可。
+### 方式二：构建 Windows EXE
 
-**停止与重启**：顶栏「重启 / 停止」控制的是总控台自身（网页服务）。停止总控台**不会**停止启动台里已经运行的应用——它们是独立进程组，会继续运行；下次打开总控台时会自动重新识别。重启总控台会加载磁盘上的最新代码，同样不影响运行中的应用。
+在项目根目录运行：
 
-## Windows 适配说明
+```powershell
+.\build.bat
+```
 
-总控台在 Windows 上以等价语义运行，平台差异如下：
+构建脚本会完成以下操作：
 
-- **受控进程模型**：Windows 没有进程组/信号。每个应用由一个小型 Python
-  “锚点”进程承载（`tools/win_anchor.py`，命令行带随机 token），用户命令
-  写入临时 `.cmd` 批处理文件后由 `cmd /c` 执行——这是 Windows 上能原样
-  执行任意命令的唯一稳妥通道。受控身份 = 锚点 PID + token 命令行 +
-  PPID 后代树；锚点会等到整棵进程树清空才退出（等价于 macOS 的 `wait`）。
-- **停止语义**：Windows 没有 SIGTERM。点“停止”会先尝试 `taskkill /T`
-  （仅对带窗口进程有效），失败自动升级为 `taskkill /T /F` 强制结束整棵
-  进程树。因此被停止的应用不会收到优雅退出通知，正在写入的数据可能丢失。
-- **进程扫描**：`lsof`/`ps` 换成 `netstat -ano -p tcp` 与
-  PowerShell `Get-CimInstance Win32_Process`；CPU% 在 Windows 上
-  暂不提供（置 0），内存使用 WorkingSet 占比。
-- **工作目录读取**：通过 `NtQueryInformationProcess` 读 PEB（ctypes，
-  只读）；同架构进程可读，被拒绝访问时该进程不显示目录。
-- **文件选择框**：独立进程弹出资源管理器式 `IFileOpenDialog`（目录可双击进入；前端对 `/api/pick` 放宽到 180 秒超时）。
-- **系统通知**：任务完成通知由浏览器 Web Notification 实现，两平台一致。
-- **数据目录**：Windows 默认 `%APPDATA%\总控台`（配置/图标）与
-  `%LOCALAPPDATA%\总控台\Logs`（日志）；同样支持
-  `CONSOLE_DATA_DIR`/`CONSOLE_LOG_DIR` 覆盖。Windows 无 POSIX 权限位，
-  目录/文件安全由 NTFS ACL 保障（健康检查会自动跳过权限位校验）。
-- **启动台自动识别**：Windows 上 Python 项目使用 `python`/`py -3` 运行器，
-  并额外识别 `start.bat`/`dev.bat`/`start.cmd`/`start.ps1` 等启动脚本。
+1. 创建或复用 `.buildenv` 隔离环境。
+2. 安装 PyInstaller、PySide6 和 Pillow。
+3. 生成 Windows 图标及版本资源。
+4. 根据 `总控台.spec` 构建单文件程序。
+5. 输出 `dist\总控台.exe`。
 
-## 使用
+双击 EXE 即可运行，正常情况下不会显示控制台窗口。单文件程序首次启动需要释放运行资源，可能等待数秒；当前构建未进行商业代码签名，Windows SmartScreen 可能显示安全提示。
 
-打开页面后，左侧是导航轨，右侧是信息栏；所有数据每 2 秒自动刷新。
+> `.buildenv`、`build` 和 `dist` 都是本地构建产物，不应提交到 Git。
 
-### 启动台（管理你的服务与任务）
+### 方式三：macOS 源码运行
 
-- **添加服务/任务**：点「+ 添加服务」卡片或页头快捷按钮。选择工作区文件夹后会自动识别项目类型（Node/pnpm、Hexo/Hugo、Django/FastAPI、Go、Rust、静态站点等）并给出候选命令；也可以「选择脚本」或完全手动填写。`service` 是长期服务（带端口语义），`task` 是有明确结束时间的批处理（强制无端口）。
-- **卡片**：大按钮启动/停止（任务是运行/中止）；右侧一排小按钮（复制链接/日志/诊断/重启/编辑/删除）常显，不用悬浮。运行中显示端口与时长；配置失效（目录/脚本丢失）会直接标出原因并禁用启动，点开「启动诊断」有修复建议。
-- **筛选**：每个分区右上角可按 全部/运行中/已停止/异常（任务为 全部/运行中/成功/失败/已取消）过滤，点按即时切换。
-- **排序**：鼠标拖拽，或聚焦卡片后按空格进入键盘排序（方向键移动，空格确认）。
-- **批量停止**：右侧「快捷操作」里可一键停止全部运行中的应用（有确认框，逐个安全停止，绝不按端口杀进程）。
-
-### 服务监控（看这台 Mac 在跑什么）
-
-- **概览卡**：在线服务/后台应用/总 CPU/总内存（带最近一分钟负载曲线）/端口警告/最后更新。
-- **服务表格**：每个服务的 PID、端口、目录、负载、时长、状态，以及**启动者徽标**——溯源显示这个进程是哪个 AI 助手（Codex/Claude/Kimi 等）、编辑器（VS Code/Cursor 等）、终端或总控台启动的。点端口直接打开服务；行尾按钮可加入启动台、置顶、隐藏、展开完整命令或安全结束进程。
-- **发现新端口**：页面打开期间新出现的监听端口会单独提醒，可一键「加入启动台」（自动识别项目并原子认领进程）、「忽略并隐藏」或「暂时关闭」。
-- **后台与已隐藏**：系统/GUI 应用进程默认折叠在「应用后台」；被隐藏的服务可随时恢复。
-- **关注的进程**：输入关键字（如 `ffmpeg`）回车，匹配进程实时列出。
-
-### 日志中心（⌘J）
-
-导航轨「日志中心」或快捷键 ⌘J（⌘L 是浏览器保留键）：所有应用按运行中优先排列，点开任意一行看实时日志；底部固定总控台自身日志入口。
-
-### 设置中心
-
-导航轨齿轮：任务完成通知开关（系统通知，切走页面也能收到）、外观三态（自动/浅色/深色）、版本/端口/工作目录/数据目录信息。
-
-### 命令面板（⌘K）
-
-全局搜索并执行：添加服务/任务、启动/停止/重启任意应用、打开页面、查看日志、切换视图、开关任务通知、查看总控台日志等，全键盘操作。
-
-### 使用要点
-
-- 红色按钮会结束进程或删除应用，需要二次确认。
-- 批处理任务自然退出 `0` 表示成功，其他非零退出码表示失败；脚本内部用户主动取消请退出 `130`（显示为「已取消」）；总控台按钮主动中止单独显示为「已中止」。
-- 选择批处理脚本时，总控台只保存脚本的绝对路径和生成的执行命令，不会复制或托管脚本内容。脚本移动、改名或删除后，任务会失效；建议将个人脚本放在长期稳定、会单独备份的自动化目录中。
-- 停止总控台不会自动停止已启动的独立服务；配置里的应用、图标、关注关键字和隐藏/置顶标记都会保留。
-
-### 批处理退出码约定
-
-任务自然退出 `0` = 成功，其他非零 = 失败；脚本内部用户主动取消请退出 `130`（显示为「已取消」而非失败）；总控台按钮中止显示为「已中止」。Python 用 `raise SystemExit(130)`，Shell 用 `exit 130`，Node.js 设 `process.exitCode = 130`。此约定只用于 `task`，长期服务仍按普通退出处理。
-
-### 新端口发现的基线规则
-
-「服务监控」只提醒**页面打开后新出现**、尚未纳入启动台的本地服务。首次载入、页面从后台恢复、断线重连或总控台重启后的第一份状态只用于建立静默基线，不会把已有端口全部弹一遍。「忽略并隐藏」写入配置并可恢复；「暂时关闭」只影响当前页面会话。
-
-## 数据、隐私与备份
-
-运行数据与程序目录分离，默认放在 macOS 用户资料库：
-
-| 路径 | 内容 | 备份建议 |
-| --- | --- | --- |
-| macOS `~/Library/Application Support/总控台/config.json`<br>Windows `%APPDATA%\总控台/config.json` | 应用命令、本地路径、端口、标记和运行识别信息 | 必须 |
-| `config.json.bak` | 上一份已知良好的配置 | 必须 |
-| `icons/` | 用户上传的图标和站点图标 | 按需 |
-| macOS `~/Library/Logs/总控台/`<br>Windows `%LOCALAPPDATA%\总控台\Logs` | 应用与总控台运行日志 | 通常不需 |
-
-目录权限会收紧为 `0700`，配置、图标和日志文件为 `0600`。这些文件仍可能含个人路径、完整 shell 命令和日志内容；不应进入 Git，也不应随发行包或故障报告对外传播。
-
-### 旧版数据首次迁移
-
-如果新目标目录尚不存在，首次启动会将项目内旧 `data/config.json{,.bak}` 和 `data/icons/` 安全复制到 Application Support，将 `data/logs/` 复制到 Library Logs。迁移使用临时目录后原子落位，并且：
-
-- 旧 `data/` 始终保留，不会自动删除。
-- 目标已存在时绝不覆盖或合并，避免把更新的用户数据换回旧版。
-- 符号链接和非普通文件不会被复制。
-- 显式设置 `CONSOLE_DATA_DIR` 或 `CONSOLE_LOG_DIR` 时，对应目录不执行旧数据自动迁移。
-
-需要自定义路径时：
+当前 `windows-support` 分支不提供 `.app` 双击启动包，但共享后端仍可通过源码运行：
 
 ```bash
-CONSOLE_DATA_DIR="/private/path/console-data" \
-CONSOLE_LOG_DIR="/private/path/console-logs" \
+python3 --version
 python3 server.py
 ```
 
-自定义值必须是非空的绝对路径，并指向总控台专用的非符号链接子目录；不要直接填 `/`、用户主目录或项目根目录。
+建议使用 Python 3.12 或更高版本。macOS 运行依赖系统自带的 `ps`、`lsof` 和 `osascript`。
 
-### 备份
+## Docker 部署
 
-1. 不再执行新的启动、停止或编辑操作。
-2. 停止总控台。
-3. 将 `~/Library/Application Support/总控台/` 复制到受保护的备份目录。
-4. 记录当前 `VERSION`，以便恢复时匹配配置格式。
+> [!WARNING]
+> Docker 容器默认只能看到容器内部的进程和端口，不能完整监控或控制 Windows/macOS 宿主机上的本地服务。若需要总控台的完整进程管理能力，请使用 Windows 原生方式运行。Docker 更适合体验界面、验证部署或管理同一容器内的任务。
 
-### 恢复
+### Docker Compose
 
-1. 确保总控台已停止，并另存当前 `~/Library/Application Support/总控台/`。
-2. 将备份中的 `config.json` 和 `icons/` 复制回对应位置，权限分别设为 `0600` 和 `0700`。
-3. 重新启动，逐项确认命令、工作目录和端口。
-
-如果主配置损坏，程序会验证 `config.json.bak` 并恢复主文件。如果两份都不可用，服务进入只读保护状态，不会用空配置覆盖它们。`config.json.bak` 保留的是每次修改之前的上一份良好配置，而不是主文件的同内容副本。
-
-## 升级
-
-1. 阅读 `CHANGELOG.md`，确认是否有配置或平台变更。
-2. 停止总控台并完整备份 `~/Library/Application Support/总控台/`。
-3. 用新版本替换程序文件；用户数据保持在 Library 目录中。
-4. 运行 `make check`。
-5. 启动后检查应用数量、主题、关注关键字和一个可控服务的完整启停。
-
-配置包含 `schemaVersion`，启动时逐版执行显式、幂等迁移。新程序不会静默降级它不认识的更高 schema；回退程序时仍应同时恢复与该版本匹配的数据备份。
-
-## 卸载
-
-1. 如果不希望已启动的服务继续运行，先在启动台逐个停止它们。
-2. 停止总控台。
-3. 按需导出 `~/Library/Application Support/总控台/` 备份。
-4. 将整个项目目录移到废纸篓。
-5. 确认不再需要数据后，手动删除 `~/Library/Application Support/总控台/` 和 `~/Library/Logs/总控台/`。
-
-程序不会安装系统启动项，卸载时也不会自动删除用户数据。
-
-## 安全边界
-
-总控台不是多用户服务器或远程管理面板。它能以当前 macOS 用户的权限执行你保存的 shell 命令，因此：
-
-- 只添加你已检查且信任的命令和工作目录。
-- 不要将服务绑定到 `0.0.0.0`，不要通过反向代理、SSH 隧道或端口映射对外暴露。
-- 不要在共享或不受信任的用户账户中运行。
-- 不要把 Application Support 中的 `config.json`、Library Logs 日志或故障截图未经脱敏就上传。
-- 本地回环绑定只是第一层边界，不能替代写接口的 Host/Origin/控制令牌防护。发布验收时必须执行 `RELEASE_CHECKLIST.md` 中的安全项。
-
-## 故障排查
-
-### 双击后没有界面
-
-- 确认 `python3 --version` 可用且符合要求。
-- 查看 `~/Library/Logs/总控台/console.log`。
-- 用 `python3 server.py` 从终端启动，直接查看错误。
-- 不要单独移动 `总控台.app`；它必须保持在项目根目录。
-
-### 9600 打不开
-
-程序可能已选择 9601–9609。查看终端输出或 `~/Library/Logs/总控台/console.log` 中的实际地址。服务可访问时，`GET /api/health` 会返回程序版本、配置 schema 和降级原因，且不会执行 `ps/lsof` 扫描。
-
-### 应用启动失败
-
-- 先打开该应用的日志和“启动诊断”。
-- 确认工作目录仍然存在、命令可在普通 shell 中运行。
-- 检查启动瞬间配置端口是否正被其他进程占用；不同项目允许保存相同的常见开发端口。
-- Finder 启动的应用不会读取你的 shell 配置；总控台会补入常用 Node/Homebrew 路径，但非标准安装仍可能需要显式绝对路径。
-
-### 配置丢失或损坏
-
-停止总控台，保留当前 `config.json`，然后按上文“恢复”流程使用已知良好的 `config.json.bak` 或离线备份。
-
-## 开发
-
-运行时无第三方 Python 依赖。重新生成品牌图标派生文件或图标库时需要开发依赖：
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python3 -m pip install -r requirements-dev.txt
+```powershell
+docker compose up -d --build
+docker compose ps
+docker compose logs -f
 ```
 
-主要目录：
+访问 <http://localhost:9600>。
+
+停止并删除容器：
+
+```powershell
+docker compose down
+```
+
+配置和日志分别保存在 `console-data`、`console-logs` 命名卷中，普通 `docker compose down` 不会删除它们。只有在确认不再需要数据时才使用 `docker compose down -v`。
+
+当前 `docker-compose.yml` 使用 `9600:9600` 发布端口，可能监听宿主机所有网络接口。仅在可信网络中使用；如只允许本机访问，请将端口映射改为：
+
+```yaml
+ports:
+  - "127.0.0.1:9600:9600"
+```
+
+### 直接使用 Docker
+
+```powershell
+docker build -t local-console:latest .
+docker run -d --name local-console `
+  -p 127.0.0.1:9600:9600 `
+  -v local-console-data:/app/data `
+  -v local-console-logs:/app/logs `
+  local-console:latest
+```
+
+健康检查：
+
+```powershell
+docker inspect --format "{{json .State.Health}}" local-console
+```
+
+更多说明见 [`QUICK_DOCKER.md`](QUICK_DOCKER.md)、[`DOCKER.md`](DOCKER.md) 和 [`DOCKER_START.md`](DOCKER_START.md)。
+
+## 数据目录与环境变量
+
+### 默认数据位置
+
+| 平台 | 配置和图标 | 日志 |
+| --- | --- | --- |
+| Windows | `%APPDATA%\总控台` | `%LOCALAPPDATA%\总控台\Logs` |
+| macOS | `~/Library/Application Support/总控台` | `~/Library/Logs/总控台` |
+| Docker | `/app/data` | `/app/logs` |
+
+主要文件：
+
+- `config.json`：应用、任务、网址、命令、目录、端口和界面配置。
+- `config.json.bak`：上一次已知良好的配置。
+- `icons/`：用户上传图标和抓取的站点图标。
+- `{appId}.log`：各应用运行日志。
+- `console.log`：总控台自身日志。
+
+配置中可能包含个人目录和完整命令，日志也可能包含敏感输出。请勿将这些运行数据、日志或未经脱敏的截图提交到 GitHub。
+
+### 可配置环境变量
+
+| 变量 | 作用 | 示例 |
+| --- | --- | --- |
+| `CONSOLE_DATA_DIR` | 覆盖配置和图标目录 | `D:\LocalOps\data` |
+| `CONSOLE_LOG_DIR` | 覆盖日志目录 | `D:\LocalOps\logs` |
+
+Windows PowerShell 示例：
+
+```powershell
+$env:CONSOLE_DATA_DIR = "D:\LocalOps\data"
+$env:CONSOLE_LOG_DIR = "D:\LocalOps\logs"
+py -3 server.py
+```
+
+自定义路径必须是非空绝对路径，并指向总控台专用目录。不要使用磁盘根目录、用户主目录或项目根目录。
+
+## 基本使用
+
+### 添加服务、任务或网址
+
+1. 在“启动台”点击“添加服务”。
+2. 选择类型：
+   - `service`：长期运行的本地服务，具有端口语义。
+   - `task`：执行后会结束的批处理任务，不使用端口。
+   - `link`：网址入口，只打开浏览器，不执行命令。
+3. 选择项目目录，让总控台只读识别候选命令，或手动填写命令。
+4. 保存后使用卡片启动、运行或打开。
+
+### 任务退出状态
+
+| 退出方式 | 显示状态 |
+| --- | --- |
+| 退出码 `0` | 成功 |
+| 退出码 `130` | 已取消 |
+| 其他非零退出码 | 失败 |
+| 点击总控台“中止” | 已中止 |
+
+### 新端口发现
+
+服务监控只提醒当前页面会话中新增、尚未管理的本地端口。首次打开、断线恢复或后台恢复时只建立静默基线，不会把所有已有端口重复提示。
+
+## 项目结构
 
 ```text
-server.py                 Python 标准库后端
-static/                   原生前端、主题、品牌、图标和字体
-tests/                    后端、前端契约、发布与交付检查
-tools/gen_brand_assets.py 从品牌主图生成 favicon 与 macOS App Icon
-tools/gen_icons.py         由 vendored SVG 生成 icons.js
-tools/check_project.py     统一的只读项目检查
-data/                      旧版运行数据（仅首次迁移源，不进 Git/发行包）
+local-ops/
+├─ server.py                 # Python 标准库后端与跨平台适配
+├─ console_gui.py            # Windows PySide6 桌面壳入口
+├─ start.bat                 # Windows 源码启动器
+├─ build.bat                 # Windows 单文件 EXE 构建脚本
+├─ 总控台.spec               # PyInstaller 构建配置
+├─ Dockerfile                # Docker 镜像定义
+├─ docker-compose.yml        # Compose 服务与数据卷
+├─ static/                   # 原生前端、主题、字体、图标和品牌资源
+├─ tests/                    # 后端、前端契约、安全和平台测试
+├─ tools/                    # 检查、资源生成和 Windows 辅助工具
+├─ docs/screenshots/         # README 界面截图
+├─ VERSION                   # 唯一版本号来源
+└─ LICENSE                   # MIT 许可证
 ```
 
-### 检查
+## 开发与测试
 
-提交前的权威命令是：
+直接运行总控台不需要安装 `requirements-dev.txt`。开发依赖仅用于重新生成图片资源：
+
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements-dev.txt
+```
+
+Windows 上执行完整项目检查：
+
+```powershell
+py -3 tools\check_project.py
+```
+
+只检查语法和项目结构：
+
+```powershell
+py -3 tools\check_project.py --skip-tests
+```
+
+只运行 Python 测试：
+
+```powershell
+py -3 -m unittest discover -s tests -p "test_*.py" -v
+```
+
+在提供 `make` 的 macOS/Linux 环境中，也可以使用：
 
 ```bash
 make check
-```
-
-它会检查 Python/JavaScript/Bash/plist/JSON 语法、版本一致性、主题和资源引用、生成的图标是否同步，并显式发现和运行测试。测试数量为 0 时会失败，不会出现“0 tests 也算通过”。
-
-只运行后端测试：
-
-```bash
 make test
-# 等价的显式命令：
-python3 -m unittest discover -s tests -p 'test_*.py' -v
-```
-
-正式发布前还应运行：
-
-```bash
 make release-check
 ```
 
-它会额外检查 Git 状态和不应进入发行范围的文件；不会代替 `RELEASE_CHECKLIST.md` 中的人工验收。
+发布前请同时阅读 [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md)。
 
-### 重新生成资源
+## 安全与隐私
 
-```bash
-make generate-icons
-make generate-brand
-make check
+- 原生服务默认只绑定 `127.0.0.1`，不要改成公网监听地址。
+- 只添加你已经检查并信任的命令、脚本和工作目录。
+- 结束进程、批量停止和删除应用均属于高风险操作，请确认目标后再执行。
+- 总控台只允许结束当前用户拥有的进程，但它仍继承当前用户的文件和程序权限。
+- 不要公开 `config.json`、应用日志、个人路径、访问令牌、密钥或未经脱敏的截图。
+- Docker 端口映射应优先绑定 `127.0.0.1`。
+- 发现安全问题时，请按 [`SECURITY.md`](SECURITY.md) 中的方式报告，不要在公开 Issue 中披露敏感细节。
+
+## 常见问题
+
+### 启动后无法访问 9600
+
+9600 可能已被其他程序占用。查看终端输出中的实际地址，或依次尝试 `http://127.0.0.1:9601` 至 `http://127.0.0.1:9609`。
+
+轻量健康检查地址：
+
+```text
+http://127.0.0.1:9600/api/health
 ```
 
-`static/icons.js` 是生成文件，不应手工修改。`generate-brand` 以 `static/assets/console-app-icon.png` 为主源，需要 macOS 自带的 `iconutil`。重新生成品牌图标后，只提交预期的差异，并同步更新 `ASSET_PROVENANCE.md` 的 SHA-256。
+### Windows 双击后没有界面
 
-## 发布
+1. 在 PowerShell 中运行 `py -3 --version`。
+2. 执行 `py -3 server.py` 查看明确错误。
+3. 检查 Windows 防火墙或安全软件是否拦截本地 Python。
+4. 如果使用 EXE，首次启动请等待单文件资源释放完成。
 
-请按 `RELEASE_CHECKLIST.md` 逐项验收。一个可对外交付的版本至少需要：
+### 应用无法启动
 
-- 与根目录 MIT 许可证一致的版权信息，以及全部第三方素材和项目图像的来源、许可与授权凭证。
-- 干净、可追溯的 Git commit 和带签名版本 Tag。
-- 通过 `make release-check` 和人工 UI/安全/升级/回滚验收。
-- 不含任何项目内旧 `data/`、用户 Library 数据、日志、绝对路径、token 或缓存的发行包。
-- 针对目标 Mac 的签名、公证、完整性校验、全新安装和回退证据。
+- 打开卡片的“配置与运行诊断”和日志。
+- 确认工作目录、脚本和运行时仍然存在。
+- 确认配置端口没有被其他进程占用。
+- 将在普通 PowerShell 中可正常运行的命令原样填入总控台。
 
-## 参与贡献与安全
+### 配置损坏或丢失
 
-- 提交代码前请阅读 [`CONTRIBUTING.md`](CONTRIBUTING.md)，并运行 `make check`。
-- 行为规范见 [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)。
-- 安全问题不要作为普通公开 Issue 披露；报告方式和脱敏要求见 [`SECURITY.md`](SECURITY.md)。
-- 新增或替换字体、图标、插画、纹理等素材时，必须同步更新 [`ASSET_PROVENANCE.md`](ASSET_PROVENANCE.md) 和 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
+停止总控台，备份当前数据目录，然后检查同目录的 `config.json.bak`。程序在主配置不可读时会尝试读取备份；两份都不可用时会进入只读保护，避免用空配置覆盖原文件。
 
-## 许可与第三方素材
+### Docker 中看不到宿主机服务
 
-项目自有代码和文档采用 [`MIT License`](LICENSE)。Lucide、Geist Mono 以及项目生成图像等素材可能适用各自的许可或发布限制，不因根目录 MIT 许可证而自动改变，详见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) 与 [`ASSET_PROVENANCE.md`](ASSET_PROVENANCE.md)。
+这是容器隔离的正常结果，不是端口扫描故障。请改用 Windows 原生运行方式管理宿主机进程。
+
+## 相关文档
+
+- [`CHANGELOG.md`](CHANGELOG.md)：版本变化记录
+- [`DOCKER.md`](DOCKER.md)：Docker 完整说明
+- [`DEPLOYMENT_REPORT.md`](DEPLOYMENT_REPORT.md)：部署验证记录
+- [`CONTRIBUTING.md`](CONTRIBUTING.md)：贡献指南
+- [`SECURITY.md`](SECURITY.md)：安全报告规范
+- [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)：第三方组件说明
+- [`ASSET_PROVENANCE.md`](ASSET_PROVENANCE.md)：素材来源与许可记录
+
+## 项目来源与许可
+
+本仓库基于 [laogou717/local-ops](https://github.com/laogou717/local-ops) 继续开发，并在其基础上增强 Windows 支持、桌面 EXE 打包、Docker 部署和技能工作台。感谢原项目作者及所有贡献者。
+
+项目自有代码和文档采用 [`MIT License`](LICENSE)。Lucide、Geist Mono 及其他第三方素材适用各自许可证，详见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) 和 [`ASSET_PROVENANCE.md`](ASSET_PROVENANCE.md)。
